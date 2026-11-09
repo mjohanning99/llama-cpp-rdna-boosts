@@ -146,7 +146,7 @@ pool, and the pool does not exist while gate #2 leaves `g_enabled = false`.  Ena
 pageable mapping — a fault.  Sequence: P2.1/P2.2 (sizing and the slab cap), then P2.3 (fills), then flip #5 and
 re-run `README.md` §10's table.
 
-### P2.0 — offer the pool-backed master on an integrated device
+### P2.0 — offer the pool-backed master on an integrated device — **LANDED in `0002`**
 
 * `ggml/src/ggml-cuda/ggml-cuda.cu:10111` — `ggml_backend_cuda_device_moe_host_master_buft()` returns NULL when
   `integrated`, on the premise that an APU "shares host memory with the GPU, so there is no pinned duplicated
@@ -156,7 +156,7 @@ re-run `README.md` §10's table.
 * The loader's guard in `0001` turns this off cleanly today: with #5 unchanged a UMA pool placement is
   refused, so the default never reaches the pinned fallback.
 
-### P2.1 — preflight: replace "OFF" with a RAM-sized arena
+### P2.1 — preflight: replace "OFF" with a RAM-sized arena — **LANDED in `0002`**
 
 `ggml/src/ggml-cuda/moe-expert-cache.cu:5604` (`moe_cache_shared_pool_device`) and `:5622`
 (`moe_cache_preflight`).  Today the integrated branch *disables the whole cache*.  New branch, taken when

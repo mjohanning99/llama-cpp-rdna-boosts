@@ -174,6 +174,34 @@ measured FRESH) is a one-line-class change that must be A/B'd on **both** boxes.
 | [`probe/`](probe/README.md) | the ten probe programs behind those numbers (they change nothing and need no root) |
 | [`0001-uma-pool-placement-scaffolding.patch`](0001-uma-pool-placement-scaffolding.patch) | the first development increment, cut against the r243 tree (`e9300f1`): gates #1 and #4 ungated for the pool mode + the safety guard on #5 + the read-only pool registration.  Applies with `git am`; it changes the default on an APU **not at all** until P2 lands |
 
+## 11. Development log — 2026-11-09 (P2 increment, `0002`)
+
+Landed: a RAM-budgeted arena on a shared pool (`MOE_EXPERT_CACHE_UMA`, `MOE_EXPERT_CACHE_UMA_RAM_PCT`), a slab
+cap that makes `free VRAM - reserve` unreachable (`ggml_cuda_slab_set_total_cap`), and the pool-backed master
+offered to an integrated device **only while the pool is armed** (`moe_cache_host_pool_enabled()`) — closing
+gate #5 without ever handing the GPU a bare pageable mapping.
+
+Measured on `halo` (`-ncmoe 8 -lm mmap --host-experts pool`, Qwen3.6-35B-A3B Q4_K_M): masters in
+`ROCm_HostMap`, arena budget **70 695 → 61 253 MiB**, text **byte-identical** to `-ncmoe 0`, no GPU faults,
+`fills=6144 tables=24 arena=3814 MiB`.
+
+**Two findings that reframe the campaign:**
+
+1. **Gate #2 was inert on this box.**  `moe_cache_shared_pool_device()` returns `integrated=1` and the preflight
+   reaches it — but the `--fit` pass pre-fills `g_budget` from free VRAM before it, and the "shared pool" refusal
+   never fired in any log from any arm.  The expert cache has therefore been **running on the APU all along**
+   with a ~69 GiB budget; "the tier is refused on an APU" was never true here.  The real defect is the
+   **uncapped budget**, which is what `0002` bounds — and that also means `0002` is the first time the arena on
+   this box is capped at all.
+2. **The budget must be keyed on the operator's `MOE_EXPERT_CACHE_MIB`**, not on `!g_auto`: the fit pass sets
+   `g_auto = 0` together with a free-VRAM figure (measured `74 489 620 070 B`), so a "no explicit budget" test
+   silently adopts the machine.
+
+**Open from this increment:** the RAM percentage default is unmeasured (60 % of `MemAvailable` still exceeds
+free VRAM on a 123 GiB box, slab 58.56 GiB); the **>RAM acceptance arm has not been run** (the criterion that
+actually justifies the campaign); the UMA INFO line does not appear in the log although the branch provably runs
+(budget moved), which is cosmetic — the census is authoritative.
+
 ## 10. Development log — 2026-11-09 (first increment)
 
 **What ran.** `halo`, gfx1151, r243 tree + `0001`, `build-wip`, Qwen3.6-35B-A3B Q4_K_M (21.1 GiB,

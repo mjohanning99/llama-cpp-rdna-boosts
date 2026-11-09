@@ -1,0 +1,383 @@
+From ad3a535a2c0cafffaf6a09cdeca550b6e9a28447 Mon Sep 17 00:00:00 2001
+From: Stew Forster <stew675@gmail.com>
+Date: Mon, 9 Nov 2026 17:42:27 -0600
+Subject: [PATCH 2/2] wip: apu-expert-pool P2 -- RAM-budgeted arena on a shared
+ pool, a slab that cannot map the machine, and the pool-backed master on an
+ integrated device
+
+P2.1: moe_cache_preflight gets a UMA arm.  The arena was refused on a shared pool because
+AUTO sizing reads "free VRAM" (on a shared pool: the whole machine), not because the tier is
+meaningless -- an expert set larger than RAM has no tier at all without it.  So size it from
+MemAvailable instead: MOE_EXPERT_CACHE_MIB (the operator's, and only that) wins, else
+MOE_EXPERT_CACHE_UMA_RAM_PCT (60) % of MemAvailable floored at the slab's arena minimum.
+MOE_EXPERT_CACHE_UMA=0 restores the pre-campaign refusal verbatim.
+
+P2.2: ggml_cuda_slab_set_total_cap() + the clamp in ggml_cuda_slab_init_locked(): a capped
+slab treats the cap as its total *and* as its free figure, so the reserve is sized against the
+budget rather than against 121 GiB of GTT.  Without this the slab maps `free VRAM - reserve`
+(the 98.44 GiB SLAB_INIT the guard's comment records).
+
+P2.0: ggml_backend_cuda_device_moe_host_master_buft() now offers the pool-backed
+(model-mapping) master to an integrated device while -- and only while -- the bounded pinned
+pool is armed (new moe_cache_host_pool_enabled() query), because that pool is what serves
+every GPU read of it.  With no pool the GPU would read the pageable mapping in place, which
+is the fault this campaign started from.
+
+Measured on halo (gfx1151, Qwen3.6-35B-A3B Q4_K_M, `-ncmoe 8 -lm mmap --host-experts pool`):
+masters land in ROCm_HostMap (per-tensor), the arena budget drops 70 695 -> 61 253 MiB, the
+run completes with byte-identical greedy text against `-ncmoe 0`, no GPU faults, and the
+cache census reports fills=6144 tables=24 arena=3814 MiB.
+
+Two findings that reframe the campaign:
+* gate #2 was INERT on this box: moe_cache_shared_pool_device() returns integrated=1 and the
+  preflight reaches it, but `--fit` pre-fills g_budget from free VRAM before it, so the arena
+  has been running on the APU all along with a ~69 GiB budget.  "The expert cache is refused on
+  an APU" was never true here; the real defect is the uncapped budget.  That is what P2.1/P2.2
+  address, and it also means this change is the first time the arena on this box is bounded.
+* the budget MUST be keyed on the operator's MOE_EXPERT_CACHE_MIB, not on `!g_auto`: the fit
+  pass sets g_auto=0 with a free-VRAM figure, so a "no explicit budget" test silently adopts
+  the machine (measured 74 489 620 070 B).
+
+Open: the RAM percentage default is unmeasured (60 % of MemAvailable still exceeds free VRAM on
+a 123 GiB box -> slab 58.56 GiB); the >RAM acceptance arm has not been run; the UMA INFO line
+does not appear in the log although the branch provably runs (cosmetic, census is authoritative).
+---
+ ggml/src/ggml-cuda/ggml-cuda-slab.cu   |  14 +++
+ ggml/src/ggml-cuda/ggml-cuda-vmm.h     |   4 +
+ ggml/src/ggml-cuda/ggml-cuda.cu        |  11 +-
+ ggml/src/ggml-cuda/moe-expert-cache.cu | 138 ++++++++++++++++++-------
+ ggml/src/ggml-cuda/moe-expert-cache.h  |   1 +
+ src/llama-model-loader.cpp             |  62 +++++------
+ 6 files changed, 164 insertions(+), 66 deletions(-)
+
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-slab.cu b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
+index d6ed08aeb..77656be6f 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-slab.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda-slab.cu
+@@ -835,6 +835,13 @@ void ggml_cuda_slab_extend_all() {
+ }
+ 
+ // Reserve + map the whole slab ONCE.  `work_min` sets the initial boundary (the first work need).
++// wip/apu-expert-pool: the cap the expert cache's preflight sets on a shared host/device pool (0 = none).
++static size_t g_slab_total_cap = 0;
++
++void ggml_cuda_slab_set_total_cap(size_t bytes) {
++    g_slab_total_cap = bytes;
++}
++
+ static bool ggml_cuda_slab_init_locked(int device, ggml_cuda_slab & s, size_t work_min) {
+     // VMM capability first: on a device that does not report it the driver API calls below are not
+     // merely useless, they abort (CU_CHECK), so the slab must decline before touching them.  This is
+@@ -867,6 +874,13 @@ static bool ggml_cuda_slab_init_locked(int device, ggml_cuda_slab & s, size_t wo
+         s.decline_reason = "cudaMemGetInfo failed";
+         return false;
+     }
++    // A capped slab (a shared host/device pool) must treat the cap as the machine it is allowed to use: both
++    // the "free" figure and the total the RESERVE is computed from, so the reserve is sized against the budget
++    // instead of against 121 GiB of GTT.
++    if (g_slab_total_cap != 0) {
++        total_b = g_slab_total_cap < total_b ? g_slab_total_cap : total_b;
++        free_b  = g_slab_total_cap < free_b  ? g_slab_total_cap : free_b;
++    }
+     const size_t reserve = ggml_cuda_slab_reserve_bytes(total_b);
+     if (free_b <= reserve + 2 * s.chunk) {
+         s.declined       = true;
+diff --git a/ggml/src/ggml-cuda/ggml-cuda-vmm.h b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
+index 7570a3b06..bcaf44cb6 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda-vmm.h
++++ b/ggml/src/ggml-cuda/ggml-cuda-vmm.h
+@@ -52,6 +52,10 @@ void * ggml_cuda_slab_work_base (int device);
+ // does not look like a realloc to the graph allocator.
+ size_t ggml_cuda_slab_work_size (int device);
+ // The arena region's total size on this device (the cache sizes itself against this, not the free VRAM).
++// wip/apu-expert-pool: cap the slab's TOTAL to `bytes` (0 = uncapped).  On a shared host/device pool the slab
++// sizes itself from "free VRAM", which is the whole machine, so `ggml_cuda_slab_init_locked` maps ~everything;
++// the caller (the expert cache's preflight) sets a RAM budget here so the over-commit is unreachable.
++void   ggml_cuda_slab_set_total_cap (size_t bytes);
+ size_t ggml_cuda_slab_arena_total (int device);
+ // Grow every slab into the VA it reserved but left unmapped, down to `GGML_CUDA_SLAB_HEADROOM_MIB` of free
+ // VRAM -- the reserve the fitting probe made the slab hold back is a guess, and this is the measured
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 4a0286460..ca851bd51 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -10110,9 +10110,18 @@ static void ggml_backend_cuda_device_moe_cache_set_host_source(ggml_backend_dev_
+ // keeps the historical pinned master.
+ static ggml_backend_buffer_type_t ggml_backend_cuda_device_moe_host_master_buft(ggml_backend_dev_t dev) {
+     const ggml_backend_cuda_device_context * dev_ctx = (ggml_backend_cuda_device_context *) dev->context;
+-    if (dev_ctx == nullptr || ggml_cuda_info().devices[dev_ctx->device].integrated) {
++    if (dev_ctx == nullptr) {
+         return nullptr;
+     }
++    if (ggml_cuda_info().devices[dev_ctx->device].integrated) {
++        // wip/apu-expert-pool: an APU is offered the pool-backed (model-mapping) master ONLY while the bounded
++        // pinned pool is armed, because that pool is what serves every GPU read of it -- with no pool the GPU
++        // would read the pageable mapping in place, which is a fatal fault without XNACK.  With the pool
++        // armed, the master costs nothing to hold and an expert set larger than RAM becomes runnable, which
++        // the "an APU needs no pinned copy" premise below does not cover.
++        return moe_cache_host_pool_enabled() ? ggml_backend_cuda_host_map_buffer_type_dev(dev_ctx->device)
++                                             : nullptr;
++    }
+     return ggml_backend_cuda_host_map_buffer_type_dev(dev_ctx->device);
+ }
+ 
+diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
+index 3573f4d4b..00236bff3 100644
+--- a/ggml/src/ggml-cuda/moe-expert-cache.cu
++++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
+@@ -5586,6 +5586,13 @@ int moe_cache_max_tok() {
+     return moe_cache_max_tok_dev(ggml_cuda_get_device());
+ }
+ 
++// wip/apu-expert-pool: is the bounded pinned pool actually armed?  The pool is what serves every GPU read of a
++// pool-backed (model-mapping) host master, so a caller must not hand out that master unless this is true: with
++// no pool the GPU would read the pageable mapping in place, which is a fatal fault without XNACK.
++bool moe_cache_host_pool_enabled() {
++    return g_pool_enabled;
++}
++
+ bool moe_cache_enabled() {
+     return g_enabled;
+ }
+@@ -5666,50 +5673,111 @@ bool moe_cache_preflight(int device, size_t host_expert_bytes, size_t aux_reserv
+     // preflight (the `common` draft/MTP aux call) does not repeat the message.
+     if (moe_cache_shared_pool_device(device)) {
+         std::lock_guard<std::mutex> lock(g_mutex);
+-        if (g_unified == 0) {
++        // wip/apu-expert-pool: the UMA arm.  The arena was refused here because AUTO sizing reads "free VRAM"
++        // -- on a shared pool that is the whole machine -- NOT because the tier is meaningless: on an APU the
++        // experts that fit in host RAM already fit the device, but an expert set LARGER than RAM has no tier
++        // at all without the arena.  So size it from a RAM figure instead and cap the movable-boundary slab to
++        // the same number, which makes the over-commit (measured 121 GiB resident + 13 GiB swap, and a
++        // `SLAB_INIT size(VA)=98.44 GiB` on a 123 GiB box) unreachable by construction rather than by an
++        // operator remembering GGML_CUDA_SLAB_RESERVE_MIB.
++        //   * MOE_EXPERT_CACHE_UMA=0            -> the pre-campaign refusal, verbatim (kill switch / A/B)
++        //   * MOE_EXPERT_CACHE_MIB=N            -> authoritative, never re-scaled
++        //   * else MOE_EXPERT_CACHE_UMA_RAM_PCT (60) % of MemAvailable, floored at the slab's arena minimum
++        // The slab cap is load-bearing: without it `ggml_cuda_slab_init_locked` maps `free VRAM - reserve`,
++        // which on a shared pool is the machine.
++        static const bool uma_off = [] {
++            const char * e = getenv("MOE_EXPERT_CACHE_UMA");
++            return e != nullptr && atoi(e) == 0;
++        }();
++        bool uma_sized = false;
++        if (g_unified == 0 && !uma_off) {
++            size_t budget = 0;
++            bool   from_ram = false;
++            // `g_budget` is NOT a source of truth here: the `--fit` pass pre-fills it from free VRAM (measured:
++            // 74 489 620 070 B = 69.4 GiB on a 123 GiB box), so an "explicit budget wins" rule that tests
++            // `!g_auto` would adopt the machine and cap nothing.  Only the OPERATOR's MOE_EXPERT_CACHE_MIB is
++            // authoritative; anything else is re-derived from RAM.
++            const char * mib_env = getenv("MOE_EXPERT_CACHE_MIB");
++            if (mib_env != nullptr && atoi(mib_env) > 0) {
++                budget = (size_t) atoi(mib_env) * 1024 * 1024;
++            } else {
++                const int64_t avail = pool_available_ram_bytes();
++                if (avail <= 0) {
++                    g_enabled = false;
++                    GGML_LOG_WARN("%s: MoE expert cache OFF on device %d: MOE_EXPERT_CACHE_UMA needs a RAM "
++                                  "figure and MemAvailable could not be read; set MOE_EXPERT_CACHE_MIB=N "
++                                  "MiB/device to size it explicitly\n", __func__, device);
++                    return false;
++                }
++                int pct = 60;
++                if (const char * e = getenv("MOE_EXPERT_CACHE_UMA_RAM_PCT")) {
++                    const int v = atoi(e);
++                    if (v > 0 && v <= 95) {
++                        pct = v;
++                    }
++                }
++                const size_t room = (size_t) avail * (size_t) pct / 100;
++                const size_t floor_b = (size_t) ggml_cuda_slab_min_arena_mib() * 1024 * 1024;
++                budget = room > floor_b ? room : floor_b;
++                from_ram = true;
++                g_budget = budget;
++                g_auto   = false;
++            }
++            ggml_cuda_slab_set_total_cap(budget);
++            uma_sized = true;
++            static std::atomic<bool> uma_logged{false};
++            if (!uma_logged.exchange(true)) {
++                GGML_LOG_INFO("%s: MoE expert cache ON on integrated device %d: arena budget %zu MiB/device "
++                              "(%s%s), slab capped to it.  A shared host/device pool has no separate VRAM, so "
++                              "the arena is a disk-backed cache over the same RAM and the slab may not map "
++                              "more than the budget.  MOE_EXPERT_CACHE_UMA=0 restores the refusal.\n",
++                              __func__, device, budget >> 20,
++                              from_ram ? "MOE_EXPERT_CACHE_UMA_RAM_PCT of MemAvailable"
++                                       : "explicit MOE_EXPERT_CACHE_MIB",
++                              from_ram ? "" : ", authoritative");
++            }
++        }
++        if (g_unified == 0 && !uma_sized) {
+             g_enabled = false;
+             GGML_LOG_WARN("%s: MoE expert cache OFF on device %d: integrated GPU whose \"VRAM\" is the "
+                           "same pool as host RAM.  The arena would only copy bytes the device can already "
+                           "read through the host master, and AUTO sizing (free VRAM) would read the whole "
+                           "shared pool.  Experts that fit in host memory already fit the device here, so "
+                           "the host-expert path is used instead (-ncmoe/-cmoe still work).  Set "
+-                          "MOE_EXPERT_CACHE_UNIFIED=1 plus an explicit MOE_EXPERT_CACHE_MIB=N only if this "
+-                          "platform really partitions host and device memory (e.g. a Windows APU with a "
+-                          "fixed VRAM carve-out).\n", __func__, device);
+-            return false;
+-        }
+-        if (g_auto) {
+-            g_enabled = false;
+-            GGML_LOG_WARN("%s: MoE expert cache OFF on device %d: MOE_EXPERT_CACHE_UNIFIED=1 needs an "
+-                          "explicit MOE_EXPERT_CACHE_MIB, because AUTO sizes from \"free VRAM\" and on a "
+-                          "shared host/device pool that is host RAM (it would size the arena against the "
+-                          "whole machine).  Set MOE_EXPERT_CACHE_MIB=N MiB/device to override.\n",
++                          "MOE_EXPERT_CACHE_MIB=N (or MOE_EXPERT_CACHE_UMA=1, the default) to size the arena "
++                          "from a RAM budget on a shared pool, or MOE_EXPERT_CACHE_UNIFIED=1 plus an explicit "
++                          "MOE_EXPERT_CACHE_MIB and GGML_CUDA_SLAB_RESERVE_MIB for a platform that really "
++                          "partitions host and device memory (e.g. a Windows APU with a fixed carve-out).\n",
+                           __func__, device);
+             return false;
+         }
+-        // The arena cannot exist without the movable-boundary slab, and the SLAB sizes itself as
+-        // `free VRAM - reserve`: on a shared pool that maps the whole machine (measured: `SLAB_INIT ...
+-        // size(VA)=98.44 GiB mapped=98.19 GiB` on a 123 GiB box, which is what over-committed it).  The
+-        // only bounded arm is one where the operator asserts how much to leave OUTSIDE the slab, via the
+-        // existing override.  Requiring it makes the forced path safe by construction instead of trusting
+-        // a heuristic for "is this APU's VRAM aperture a real partition?" (Windows can cap an APU to a
+-        // fixed carve-out, which is the one case this exists for).
+-        if (getenv("GGML_CUDA_SLAB_RESERVE_MIB") == nullptr) {
+-            g_enabled = false;
+-            GGML_LOG_WARN("%s: MoE expert cache OFF on device %d: MOE_EXPERT_CACHE_UNIFIED=1 also needs an "
+-                          "explicit GGML_CUDA_SLAB_RESERVE_MIB.  The cache requires the movable-boundary "
+-                          "slab, and the slab maps `free VRAM - reserve`; on a shared host/device pool "
+-                          "\"free VRAM\" is host RAM, so an unset reserve maps the whole machine.  Set "
+-                          "GGML_CUDA_SLAB_RESERVE_MIB=<MiB to keep OUTSIDE the slab> as well.\n",
+-                          __func__, device);
+-            return false;
+-        }
+-        static std::atomic<bool> unified_logged{false};
+-        if (!unified_logged.exchange(true)) {
+-            GGML_LOG_WARN("%s: MOE_EXPERT_CACHE_UNIFIED=1: expert cache ON with MOE_EXPERT_CACHE_MIB=%zu "
+-                          "MiB/device on integrated device %d (shared host/device pool requested by the "
+-                          "user); this is a copy tier over host RAM unless the platform caps VRAM\n",
+-                          __func__, g_budget >> 20, device);
++        if (g_unified != 0 && !uma_sized) {
++            if (g_auto) {
++                g_enabled = false;
++                GGML_LOG_WARN("%s: MoE expert cache OFF on device %d: MOE_EXPERT_CACHE_UNIFIED=1 needs an "
++                              "explicit MOE_EXPERT_CACHE_MIB, because AUTO sizes from \"free VRAM\" and on a "
++                              "shared host/device pool that is host RAM (it would size the arena against the "
++                              "whole machine).  Set MOE_EXPERT_CACHE_MIB=N MiB/device to override.\n",
++                              __func__, device);
++                return false;
++            }
++            if (getenv("GGML_CUDA_SLAB_RESERVE_MIB") == nullptr) {
++                g_enabled = false;
++                GGML_LOG_WARN("%s: MoE expert cache OFF on device %d: MOE_EXPERT_CACHE_UNIFIED=1 also needs "
++                              "an explicit GGML_CUDA_SLAB_RESERVE_MIB.  The cache requires the "
++                              "movable-boundary slab, and the slab maps `free VRAM - reserve`; on a shared "
++                              "host/device pool \"free VRAM\" is host RAM, so an unset reserve maps the whole "
++                              "machine.  Set GGML_CUDA_SLAB_RESERVE_MIB=<MiB to keep OUTSIDE the slab> as "
++                              "well.\n", __func__, device);
++                return false;
++            }
++            static std::atomic<bool> unified_logged{false};
++            if (!unified_logged.exchange(true)) {
++                GGML_LOG_WARN("%s: MOE_EXPERT_CACHE_UNIFIED=1: expert cache ON with MOE_EXPERT_CACHE_MIB=%zu "
++                              "MiB/device on integrated device %d (shared host/device pool requested by the "
++                              "user); this is a copy tier over host RAM unless the platform caps VRAM\n",
++                              __func__, g_budget >> 20, device);
++            }
+         }
+     }
+     // WIP moe-upload-overlap: remember the per-device host-expert bytes so the deferred arena sizing can
+diff --git a/ggml/src/ggml-cuda/moe-expert-cache.h b/ggml/src/ggml-cuda/moe-expert-cache.h
+index 0b851073f..4e3a09f34 100644
+--- a/ggml/src/ggml-cuda/moe-expert-cache.h
++++ b/ggml/src/ggml-cuda/moe-expert-cache.h
+@@ -89,6 +89,7 @@ struct moe_cache_alias {
+ };
+ 
+ bool moe_cache_enabled();
++bool moe_cache_host_pool_enabled();
+ // true once the cache is sized with host-expert tables: the workspace pool then keeps a free-VRAM floor on its
+ // first attempt (ggml_cuda_pool_leg::alloc)
+ bool moe_cache_floor_active();
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index f6dcd3c18..bf1c70869 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -209,36 +209,6 @@ void llama_model_loader::plan_host_expert_placement(int n_layer_trunk) {
+                                  "in this placement mode";
+         return;
+     }
+-    // wip/apu-expert-pool: on a shared pool an allowed pool/hole placement is only SOUND when the device can
+-    // actually offer the pool-backed master (the read-only model mapping).  Without it `host_expert_buft`
+-    // silently falls back to the FULL PINNED master -- which is the arm whose in-place read faulted on
+-    // gfx1151 (`-ncmoe 24`/`48`, `mul_mat_q<Q2_0,16>`) -- and the operator gets neither the tier they asked
+-    // for nor the truth about it.  Refuse the placement instead and keep the experts on the device: the
+-    // default then does exactly what it does today until the pool tier is complete, and says so.
+-    if (host_experts_umem && use_mmap) {
+-        bool master_ok = false;
+-        for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+-            ggml_backend_dev_t d = ggml_backend_dev_get(i);
+-            if (ggml_backend_dev_moe_host_master_buft(d) != nullptr) {
+-                master_ok = true;
+-                break;
+-            }
+-        }
+-        if (!master_ok) {
+-            host_experts_umem_refuse = true;
+-            host_experts_plan_done   = false;
+-            host_experts_policy      = "shared host/device memory pool (integrated GPU): no pool-backed master "
+-                                       "on this backend build, so the placement is refused (a pinned master "
+-                                       "there is the arm that faults)";
+-            LLAMA_LOG_WARN("%s: a `pool` host-expert placement on a shared host/device pool needs the "
+-                           "pool-backed (model-mapping) master, which this backend does not offer for an "
+-                           "integrated device (%s).  The placement is REFUSED rather than falling back to the "
+-                           "full pinned master, which is the arm that has faulted here.  Experts stay on their "
+-                           "layer's device.\n", __func__, "ggml_backend_cuda_device_moe_host_master_buft");
+-            return;
+-        }
+-    }
+-
+     // --- 1. the candidate set and its byte total ------------------------------------------------
+     // The loader owns the whole GGUF index (`weights_map`) before the arch creates a single tensor, which is
+     // what makes a budget decidable at all: which tensors to pin depends on the WHOLE set's hotness, not on
+@@ -341,6 +311,38 @@ void llama_model_loader::plan_host_expert_placement(int n_layer_trunk) {
+                 ggml_backend_dev_moe_cache_set_host_pool(d, true);
+             }
+         }
++        // wip/apu-expert-pool: on a shared pool an allowed pool/hole placement is only SOUND when the device
++        // can offer the pool-backed master (the read-only model mapping) AND the pool that serves every GPU
++        // read of it is armed -- which is why this check runs HERE, after `set_host_pool` above: without the
++        // master `host_expert_buft` silently falls back to the FULL PINNED master (the arm whose in-place read
++        // faulted on gfx1151), and with the master but no pool the GPU reads a pageable mapping and faults.
++        // Refuse the placement instead and keep every expert on its device.
++        if (host_experts_umem && use_mmap && host_experts_pool_holes) {
++            bool master_ok = false;
++            for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
++                if (ggml_backend_dev_moe_host_master_buft(ggml_backend_dev_get(i)) != nullptr) {
++                    master_ok = true;
++                    break;
++                }
++            }
++            if (!master_ok) {
++                host_experts_umem_refuse = true;
++                host_experts_holes.clear();
++                host_experts_plan_done = false;
++                for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
++                    ggml_backend_dev_moe_cache_set_host_pool(ggml_backend_dev_get(i), false);
++                }
++                host_experts_policy = "shared host/device memory pool (integrated GPU): the pool-backed "
++                                      "(model-mapping) master is not available on this backend, so the "
++                                      "placement is refused (a pinned master there is the arm that faults)";
++                LLAMA_LOG_WARN("%s: a `pool` host-expert placement on a shared host/device pool needs the "
++                               "pool-backed (model-mapping) master, which this backend does not offer for an "
++                               "integrated device.  The placement is REFUSED rather than falling back to the "
++                               "full pinned master (the arm that has faulted here); every expert stays on its "
++                               "layer's device.\n", __func__);
++                return;
++            }
++        }
+         const char * how = budget >= total ? "the whole host expert set (a MIRROR)"
+                                            : "the arena's complement, plus mirrored residents while capacity lasts";
+         if (host_experts_limit_gib > 0) {
+-- 
+2.56.0
+
