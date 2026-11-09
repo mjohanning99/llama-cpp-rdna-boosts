@@ -205,7 +205,9 @@ the mapping and every GPU read is served through the pool", so offering it while
 only be enabled together with **P2** (the cache — and therefore the pool fills — live on a shared pool with a
 RAM budget).  That is why `0001` stops at scaffolding.
 
-**Open decision for the maintainer** (also §7): should `caps.mmap_support` stay false for every iGPU, with the
-AUTO→mmap behaviour kept as a load-mode special case (what `0001` does), or should a shared-pool APU declare
-mmap support outright?  The latter is simpler, but it changes the default load mode for **every** APU run, not
-just MoE ones.
+**Decision (maintainer, 2026-11-09):** `caps.mmap_support` stays false for every iGPU; an APU declares its load
+mode explicitly.  When `-lm auto` is in force **and** a host-expert placement is requested, `0001` keeps mmap
+(`MOE_UMA_MMAP=0` restores the iGPU exclusion); `-lm none`/`-lm dio` keep the full pinned master, which is a
+legitimate (if larger and slower) placement rather than something to refuse — the non-mapped arms differ in
+cost, not in capability.  A non-mapped load feeding the pool from a pageable copy is a follow-up (**P1.4**), not
+a gate.

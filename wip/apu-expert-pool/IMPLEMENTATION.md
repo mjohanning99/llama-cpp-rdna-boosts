@@ -95,6 +95,14 @@ against the completed path, and record the outcome in `MEASUREMENTS.md`.
   kill switch, `MOE_HOST_EXPERTS_UMA` (default `1`; `0` restores today's refusal verbatim), so a bisect can put
   the box back exactly as it is now.
 
+### P1.4 — a NON-mapped load can feed the pool too (follow-up, not a gate)
+
+`--load-mode none`/`dio` cannot use the pool-backed master (there is no mapping to place the tensors in), so the
+full pinned master is kept.  That is a *cost* difference, not a capability one: the non-mapped arms could still
+feed the bounded pool from a pageable copy (the `HostMap` alloc path already warns that it is "a pageable copy
+instead of being read from disk on demand").  Worth doing only if a user asks for it — it duplicates the set in
+RAM, so it cannot be a default on a box whose whole point is not fitting.
+
 ### P1.2 — sizing on a shared pool
 
 * `MOE_HOST_LIMIT_FRAC` (80 %) and `MOE_HOST_POOL_RAM_PCT` (85 %) were derived where host RAM had no VRAM
