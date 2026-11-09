@@ -202,6 +202,35 @@ free VRAM on a 123 GiB box, slab 58.56 GiB); the **>RAM acceptance arm has not b
 actually justifies the campaign); the UMA INFO line does not appear in the log although the branch provably runs
 (budget moved), which is cosmetic — the census is authoritative.
 
+## 12. The UMA budget policy (maintainer, 2026-11-09; `0003`)
+
+On a UMA APU "VRAM" and RAM are **one medium**, so the tiers must be sized from one figure and must not add up
+to all of it:
+
+| share of free system memory (`MemAvailable`) | what | knob |
+|---|---|---|
+| **75 %** | "VRAM" — the expert-cache arena and the movable-boundary slab ceiling | `MOE_UMA_VRAM_PCT` |
+| **10 %** | the pinned expert pool, **auto mode only** | `MOE_UMA_POOL_PCT` (the UMA-aware default of `MOE_HOST_POOL_RAM_PCT`, which is now `-1 = auto`) |
+| ~15 % | the OS, the page cache, and the model mapping the pool fills from | — |
+
+They are **ceilings, not reservations**: a tier takes only what its tables need (measured on `halo`: pool
+3814 MiB against a 10.2 GiB ceiling, so it did not bind; arena 76 643 MiB = 75 % of `MemAvailable`).
+`MOE_EXPERT_CACHE_MIB` and an explicit `MOE_HOST_POOL_RAM_PCT` remain authoritative on any platform.
+
+The 15 % floor is not slack: the page cache **is** the pool's fill source, so a 100 % budget is one that fights
+itself.
+
+**The advisory.** When the model's own bytes fit inside that 75 %, the loader says so loudly and still honours
+the request:
+
+> `this model (21603.0 MiB) FITS in this APU's usable device memory (89153.2 MiB = 75% of MemAvailable):
+> host-resident MoE experts (-ncmoe/-cmoe/-lme, --host-experts pool) gain nothing here and cost decode
+> bandwidth, because on a shared host/device pool the experts would already be device-resident. -ncmoe 0 is
+> almost certainly faster on this box. Honouring the request anyway.`
+
+It is deliberately advisory, never a clamp: the operator may have a reason (a KV cache that needs the room, a
+concurrent tenant, a measurement in flight).
+
 ## 10. Development log — 2026-11-09 (first increment)
 
 **What ran.** `halo`, gfx1151, r243 tree + `0001`, `build-wip`, Qwen3.6-35B-A3B Q4_K_M (21.1 GiB,

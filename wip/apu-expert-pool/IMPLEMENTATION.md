@@ -162,8 +162,9 @@ re-run `README.md` §10's table.
 (`moe_cache_preflight`).  Today the integrated branch *disables the whole cache*.  New branch, taken when
 `prop.integrated`:
 
-* budget = explicit `MOE_EXPERT_CACHE_MIB` if set, else `MOE_EXPERT_CACHE_UMA_RAM_PCT` (new; start at 60,
-  tune) × `MemAvailable` read **once, at preflight**, floored by `MOE_EXPERT_CACHE_MIN_MIB`.  **Never** from
+* budget = explicit `MOE_EXPERT_CACHE_MIB` if set, else `MOE_UMA_VRAM_PCT` (75) × `MemAvailable` read
+  **once, at preflight**, floored by `MOE_EXPERT_CACHE_MIN_MIB`.  The pinned pool takes
+  `MOE_UMA_POOL_PCT` (10) of the same figure in auto mode; see `README.md` §12.  **Never** from
   "free VRAM" — that is the 2026-10-19 over-commit (121 GiB resident + 13 GiB swap) and the reason the gate
   exists.
 * `MOE_EXPERT_CACHE_UNIFIED=1` + explicit MIB + `GGML_CUDA_SLAB_RESERVE_MIB` stays as the **carve-out** arm
