@@ -25,11 +25,16 @@ over bytes, and a "cold" one is a `pread`.
 
 ## 1. What is gated today (three places, all deliberate)
 
-| # | where | what it does on an integrated GPU |
-|---|---|---|
-| 1 | `src/llama-model.cpp` (~L1888, the `IGPU` device scan) → `llama_model_loader::set_host_experts_umem(true)` (`src/llama-model-loader.cpp:130`) | sets `host_experts_umem`, which **zeroes `n_cpu_moe_from_end`** and makes `host_expert_selected()` (`:149`) return false, so `-ncmoe`/`-cmoe`/`-lme`/a CPU `--override-tensor *_exps.*` are **ignored**: every expert stays on its layer's device. |
-| 2 | `moe_cache_shared_pool_device()` + `moe_cache_preflight()` (`ggml/src/ggml-cuda/moe-expert-cache.cu:5604`, `:5622`) | turns the **whole expert-cache stack** off (`g_enabled = false`): arena, pool, heat map, cache-band fusions.  Escape hatch only: `MOE_EXPERT_CACHE_UNIFIED=1` **plus** an explicit `MOE_EXPERT_CACHE_MIB` **plus** `GGML_CUDA_SLAB_RESERVE_MIB`. |
-| 3 | `common/fit.cpp` (~L700, `cache_reserve.arena_refused`) | withholds no slab headroom and no arena in the `--fit` margin, matching #2. |
+There are **five** gates, not three — the first two only looked like the whole story until the
+development pass (2026-11-09, §10) actually exercised the path.
+
+| # | where | what it does on an integrated GPU | state |
+|---|---|---|---|
+| 1 | `src/llama-model.cpp` (~L1888, the `IGPU` device scan) → `llama_model_loader::set_host_experts_umem(true)` (`src/llama-model-loader.cpp:130`) | zeroes `n_cpu_moe_from_end`, so `-ncmoe`/`-cmoe`/`-lme`/a CPU `*_exps.*` override are **ignored**; every expert stays on its layer's device | **ungated in `0001`** — `pool`/`auto` allowed, `pinned` still refused, `MOE_HOST_EXPERTS_UMA=0` = the old blanket |
+| 2 | `moe_cache_shared_pool_device()` + `moe_cache_preflight()` (`ggml/src/ggml-cuda/moe-expert-cache.cu:5604`, `:5622`) | turns the **whole expert-cache stack off** (`g_enabled = false`): arena, pool, heat map.  Escape hatch only: `MOE_EXPERT_CACHE_UNIFIED=1` + explicit `MOE_EXPERT_CACHE_MIB` + `GGML_CUDA_SLAB_RESERVE_MIB` | still ON — **P2**, and it is the prerequisite for the mapping master (see #5) |
+| 3 | `common/fit.cpp` (~L700, `cache_reserve.arena_refused`) | withholds no slab headroom and no arena in the `--fit` margin, matching #2 | still ON — **P3** |
+| 4 | `ggml/src/ggml-cuda/ggml-cuda.cu:9376` — `caps.mmap_support = props->type != GGML_BACKEND_DEVICE_TYPE_IGPU` | an APU advertises **no mmap support**, so `--load-mode auto` (the default) resolves to `none` (`src/llama-model.cpp`'s AUTO fallback, upstream #28160) — and the pool tier's whole premise, the read-only model mapping, is never built.  Measured: `-ncmoe 8 --host-experts pool` kept a **4329 MiB full pinned master** instead of a 3814 MiB pool mirror | **worked around in `0001`** — when AUTO is asked for *and* a host-expert placement needs the mapping, mmap is kept (`MOE_UMA_MMAP=0` restores the exclusion).  Whether the capability itself should stay false on a UMA APU is an open question (§7) |
+| 5 | `ggml/src/ggml-cuda/ggml-cuda.cu:10111` — `ggml_backend_cuda_device_moe_host_master_buft()` returns **NULL for an integrated device** | the pool-backed (model-mapping) master is offered to discrete devices only, on the premise that an APU "shares host memory with the GPU, so there is no pinned duplicated copy to drop".  That premise holds only while the whole set fits in RAM — the case this campaign exists for is the one where it does not | **not yet changed** — **P2.0**.  Until it is, `0001` makes the loader **refuse** the placement (`plan_host_expert_placement`, when `moe_host_master_buft()` is null) rather than silently fall back to the full pinned master — the arm that faulted |
 
 The `--host-experts mmap` spelling is separately refused everywhere (`common/arg.cpp:2697`, issue #116) because
 a **pageable host master cannot be read by a no-XNACK GPU** — that refusal is *correct and stays* (see §6).
@@ -167,3 +172,40 @@ measured FRESH) is a one-line-class change that must be A/B'd on **both** boxes.
 | [`IMPLEMENTATION.md`](IMPLEMENTATION.md) | the phased plan: code touch points, env surface, gate script spec, docs, rollback, effort |
 | [`MEASUREMENTS.md`](MEASUREMENTS.md) | the probe log: box config, every number, reproduction commands |
 | [`probe/`](probe/README.md) | the ten probe programs behind those numbers (they change nothing and need no root) |
+| [`0001-uma-pool-placement-scaffolding.patch`](0001-uma-pool-placement-scaffolding.patch) | the first development increment, cut against the r243 tree (`e9300f1`): gates #1 and #4 ungated for the pool mode + the safety guard on #5 + the read-only pool registration.  Applies with `git am`; it changes the default on an APU **not at all** until P2 lands |
+
+## 10. Development log — 2026-11-09 (first increment)
+
+**What ran.** `halo`, gfx1151, r243 tree + `0001`, `build-wip`, Qwen3.6-35B-A3B Q4_K_M (21.1 GiB,
+`qwen35moe`, 40 layers), `-ngl 99 -ncmoe 8`, prompt `The capital of France is`, `-n 20 --seed 42 --temp 0`,
+`--single-turn --no-display-prompt`; text hashed with **no `-lv`**, censuses at `-lv 4`.
+
+| arm | load mode | placement | text | GPU faults |
+|---|---|---|---|---|
+| `-ncmoe 0` (all device) | `none` | — | reference | none |
+| `--host-experts pool -ncmoe 8`, default flags | `none` (**gate #4**) | falls back to the **full pinned master** (`ROCm_Host` 4329 MiB) | identical | none |
+| `--host-experts pool -ncmoe 8 -lm mmap` | `mmap` | **pool placement applies** (pool mirror 3814 MiB, `plan … MIRROR`, 24/24 sources) | **identical** | **none** |
+| `--host-experts pool -ncmoe 8` + `0001`'s mmap fix | `mmap` (kept) | pool placement applies | **identical** | **none** |
+| `--host-experts pinned -ncmoe 8` | `none` | **refused** (gate #1) | n/a | none |
+| `MOE_HOST_EXPERTS_UMA=0` + pool | `none` | **refused** — today's behaviour verbatim | n/a | none |
+
+The headline: **the pool placement does not fault on gfx1151.**  The historical `mul_mat_q<Q2_0,16>` fault
+is therefore *not* an architectural limit of the tier — it is consistent with the placement falling back to
+the pinned master, which is what happens whenever the mapping master is unavailable (on an APU: always, per
+gate #5).
+
+**What the increment changes:** gate #1 becomes a policy (pool allowed, pinned refused, kill switch); gate #4
+keeps mmap when a host-expert placement needs it (kill switch); the pool registers its device alias
+**read-only** when no arena is live (233 vs 60 GB/s on UMA, with a census line); and the safety guard makes an
+APU pool placement **refused** rather than silently becoming the pinned arm while #5 is unchanged.
+
+**The coupling that sets the next step.** Gate #5 is not a one-liner: `HostMap` means "the tensors live in
+the mapping and every GPU read is served through the pool", so offering it while gate #2 leaves the cache
+`g_enabled = false` would hand the GPU a *pageable* mapping — the fault this campaign started from.  #5 can
+only be enabled together with **P2** (the cache — and therefore the pool fills — live on a shared pool with a
+RAM budget).  That is why `0001` stops at scaffolding.
+
+**Open decision for the maintainer** (also §7): should `caps.mmap_support` stay false for every iGPU, with the
+AUTO→mmap behaviour kept as a load-mode special case (what `0001` does), or should a shared-pool APU declare
+mmap support outright?  The latter is simpler, but it changes the default load mode for **every** APU run, not
+just MoE ones.

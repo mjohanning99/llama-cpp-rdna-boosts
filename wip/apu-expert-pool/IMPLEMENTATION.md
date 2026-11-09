@@ -23,6 +23,17 @@ Ten probes, no root, nothing changed in the fork.  See [`MEASUREMENTS.md`](MEASU
 3. A registered **writable** host range reads at 60.2 GB/s; registered **read-only** at 230.8 GB/s.  The
    shipped pool registers writable.
 
+## P1's two extra gates (found by the development pass, not by reading)
+
+Both are in `ggml/src/ggml-cuda/ggml-cuda.cu` and both are about the *capability* declarations rather than the
+loader:
+
+* **gate #4** (`:9376`) `caps.mmap_support = props->type != GGML_BACKEND_DEVICE_TYPE_IGPU` — an APU therefore
+  advertises no mmap, `--load-mode auto` resolves to `none`, and the pool tier's mapping is never built.
+  `0001` keeps mmap when AUTO is asked for *and* a host-expert placement needs it (`MOE_UMA_MMAP=0` restores).
+* **gate #5** (`:10111`) `moe_host_master_buft()` returns NULL for an integrated device — the mapping master
+  is offered to discrete only.  Lifting it is **P2.0** and is coupled to P2.3 (see below).
+
 ## P0.5 — the standalone win: read-only registration for the pool's device alias
 
 Ships on its own, needs no UMA gating, and is measurable today.
@@ -49,21 +60,21 @@ expert tensors are placed **directly in the read-only model mapping** and every 
 through the bounded pinned pool.  That is exactly the tier this campaign wants, it is already shipped and gate-
 covered **for discrete**, and on UMA only gate #1 stops it.
 
-### P1.0 — find the root cause of the gfx1151 fault first (no code)
+### P1.0 — the root-cause question, ANSWERED (2026-11-09)
 
 The gate cites `-ncmoe 24`/`48` on Qwen3.8-Flash-Next faulting in `mul_mat_q<Q2_0,16>` at a host address.
-Reproduce it, then separate the three candidates:
+The development pass could not reproduce it **for a pool placement**: with the mapping master forced on
+(`-lm mmap`) the pool tier armed and ran on gfx1151 with byte-identical text and no fault
+(`README.md` §10).  What it did find is *how the fault is produced*: on an APU the placement **always** falls
+back to the full pinned master (gate #5), because `moe_host_master_buft()` is NULL for integrated devices —
+so every UMA run of this tier so far has been the pinned arm, which is the arm the fault report names.
+That makes the historical fault a **placement-resolution** defect, not a property of the tier, and it makes
+the guard in `0001` ("refuse rather than fall back to pinned") the load-bearing part of the increment.
 
-| hypothesis | how to test | if true |
-|---|---|---|
-| (a) registration flags: the host-expert buft registers `cudaHostRegisterPortable\|cudaHostRegisterReadOnly`, **no `Mapped`** (`ggml-cuda.cu:9178`) | add `Mapped` behind an env and re-run the faulting arm | a one-line fix; `pinned` becomes usable too |
-| (b) a **pageable** pointer reached the GPU (the mapping, not the pinned master) — `pool` placement taken while the loader believed `pinned` | `MOE_HOST_POOL_FILL_FAULT=1`-style decline arms + the address in the fault message vs `/proc/<pid>/maps` (attribute by address-to-buffer, never by kernel name — r214 §2) | a placement bug, not an architecture limit |
-| (c) a genuine unpin/eviction | run with the pool pinned and large enough that nothing is reclaimed; `mincore()` the master before the faulting launch | a residency defect (then `INVARIANTS.md` gains an entry) |
+Still worth doing when P2 lands: re-run the *original* fault arm (`-ncmoe 24`/`48`, Flash-Next GSQ-IQ3_XXS)
+against the completed path, and record the outcome in `MEASUREMENTS.md`.
 
-Do **not** skip this step: the whole campaign's risk assessment depends on whether the tier "cannot work on UMA"
-or "has a fixable defect that was read as 'cannot work'".  Record the answer in this file before P1.1.
-
-### P1.1 — make the loader's refusal a policy, not a blanket
+### P1.1 — make the loader's refusal a policy, not a blanket — **LANDED in `0001`**
 
 * `src/llama-model.cpp` (~L1888): the `IGPU` scan calls `ml.set_host_experts_umem(true)` unconditionally before
   `plan_host_expert_placement()`.  Pass the resolved mode instead:
@@ -120,6 +131,22 @@ or "has a fixable defect that was read as 'cannot work'".  Record the answer in 
 ## P2 — the UMA **arena** as the disk-backed cache (the maintainer's shape)
 
 Only start this after P1's numbers are in: it must beat P1 at **equal RAM**, or P1 is the answer.
+
+**P2 is also now the prerequisite for the mapping master.**  Gate #5 (`ggml-cuda.cu:10111`, `HostMap` is NULL
+for an integrated device) can only be lifted *with* P2: `HostMap` means every GPU read is served through the
+pool, and the pool does not exist while gate #2 leaves `g_enabled = false`.  Enabling #5 alone hands the GPU a
+pageable mapping — a fault.  Sequence: P2.1/P2.2 (sizing and the slab cap), then P2.3 (fills), then flip #5 and
+re-run `README.md` §10's table.
+
+### P2.0 — offer the pool-backed master on an integrated device
+
+* `ggml/src/ggml-cuda/ggml-cuda.cu:10111` — `ggml_backend_cuda_device_moe_host_master_buft()` returns NULL when
+  `integrated`, on the premise that an APU "shares host memory with the GPU, so there is no pinned duplicated
+  copy to drop".  That premise is true only while the whole set fits in RAM.  Return the `HostMap` buft on an
+  integrated device **when the pool tier is armed**, and never before (P2.3's fills must be live in the same
+  build), or the GPU reads the mapping.
+* The loader's guard in `0001` turns this off cleanly today: with #5 unchanged a UMA pool placement is
+  refused, so the default never reaches the pinned fallback.
 
 ### P2.1 — preflight: replace "OFF" with a RAM-sized arena
 

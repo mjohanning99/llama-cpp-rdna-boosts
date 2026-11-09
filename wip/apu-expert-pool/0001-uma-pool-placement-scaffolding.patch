@@ -1,0 +1,291 @@
+From 38829df203e606a0cd6afb1b750c24980620b510 Mon Sep 17 00:00:00 2001
+From: Stew Forster <stew675@gmail.com>
+Date: Mon, 9 Nov 2026 17:29:17 -0600
+Subject: [PATCH] wip: apu-expert-pool -- ungate the pool placement on a
+ shared-pool APU, keep mmap for it, and register the host pool read-only
+
+Three changes, all behind env switches, none of them default-changing on a box where the
+mechanism is incomplete:
+
+1. src/llama-model-loader: a shared host/device pool (integrated GPU) no longer refuses EVERY
+   host-expert placement -- it refuses PINNED only.  A `pool`/`auto` placement keeps the
+   masters in the read-only model mapping and serves every GPU read through the bounded
+   pinned pool, which is the shape a >RAM expert set needs.  `MOE_HOST_EXPERTS_UMA=0`
+   restores the blanket refusal verbatim.  Safety guard in the same change: on a shared pool
+   the placement is REFUSED outright when no device offers the pool-backed master
+   (ggml_backend_dev_moe_host_master_buft), because host_expert_buft would otherwise silently
+   fall back to the full pinned master -- the arm whose in-place read faulted on gfx1151.
+
+2. src/llama-model: `caps.mmap_support` is false for an iGPU by construction (the HIP backend
+   sets it to `type != IGPU`), so `--load-mode auto` resolved to `none` on an APU and the pool
+   tier lost the model mapping it is built on (measured: `-ncmoe 8 --host-experts pool` kept
+   the 4329 MiB full pinned master instead of a 3814 MiB pool mirror).  When the operator asked
+   for AUTO and a host-expert placement needs the mapping, keep mmap.  `MOE_UMA_MMAP=0`
+   restores the iGPU exclusion.
+
+3. ggml-cuda/moe-expert-cache: the host pool registers its device alias READ-ONLY when no arena
+   is live (measured on gfx1151: 233 GB/s read against 60 GB/s for the writable alias; the
+   PCIe link masks it on a discrete box).  Read-only is illegal while the arena->pool demote
+   can write the backing from the device, so it is tied to `!g_enabled` and refuses loudly if
+   forced on with a live arena.  `MOE_HOST_POOL_RO=0` restores the writable registration, and
+   the decision now prints once (census).
+
+Measured on halo (gfx1151, Qwen3.6-35B-A3B Q4_K_M, `-ncmoe 8`): with `-lm mmap` the pool
+placement engaged and produced BYTE-IDENTICAL greedy text to `-ncmoe 0` (same seed/prompt,
+hashed with no `-lv`), and NO GPU fault -- so the historical `mul_mat_q<Q2_0,16>` fault is not
+an architectural limit of the pool placement.  Two gates remain and are coupled:
+moe_host_master_buft returns NULL for integrated devices (so the mapping master is not offered
+on an APU at all), and offering it is only sound once the pool actually fills -- which needs
+the expert cache enabled on a shared pool with a RAM budget (moe_cache_preflight, still OFF).
+With the guard above, the default on an APU is unchanged until that lands.
+
+Record: wip/apu-expert-pool/ in the delivery repo.
+---
+ ggml/src/ggml-cuda/moe-expert-cache.cu | 32 ++++++++++-
+ src/llama-model-loader.cpp             | 74 ++++++++++++++++++++++----
+ src/llama-model-loader.h               | 22 +++++---
+ src/llama-model.cpp                    | 27 ++++++++++
+ 4 files changed, 135 insertions(+), 20 deletions(-)
+
+diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
+index e2ecc287e..3573f4d4b 100644
+--- a/ggml/src/ggml-cuda/moe-expert-cache.cu
++++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
+@@ -2014,8 +2014,36 @@ static bool pool_mmap_thp_pin(host_pool_t & p) {
+     if (p.base == nullptr || p.mmap_bytes == 0 || p.registered) {
+         return p.registered;
+     }
+-    if (cudaHostRegister(p.base, p.mmap_bytes,
+-                         cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
++    // wip/apu-expert-pool: a READ-ONLY device registration is the fast in-place read on a shared host/device
++    // pool (measured on gfx1151: 233 GB/s against 60 GB/s for the writable one -- the coherent mapping; the
++    // PCIe link on a discrete box masks the difference, so it needs an A/B there).  It is only LEGAL while
++    // nothing writes the backing FROM THE DEVICE: the arena->pool demote (`access_locked`'s sink path, the
++    // one `cudaMemcpyDeviceToHost` into `pool->base`) is that writer, and it cannot exist without an arena.
++    // So: on when the expert cache is disabled for this run (every shared-pool APU today, and any
++    // `MOE_EXPERT_CACHE_MIB=0` run), off when an arena is live.  `MOE_HOST_POOL_RO=1|0` forces either, and
++    // forcing it on with a live arena is refused loudly rather than corrupting the pool.
++    bool pool_ro = !g_enabled;
++    if (const char * e = getenv("MOE_HOST_POOL_RO")) {
++        const bool want = atoi(e) != 0;
++        if (want && g_enabled) {
++            GGML_LOG_WARN("%s: MOE_HOST_POOL_RO=1 refused: the expert arena is live, and the arena->pool demote "
++                          "writes this backing from the device; a read-only registration would corrupt it\n",
++                          __func__);
++        } else {
++            pool_ro = want;
++        }
++    }
++    const unsigned reg_flags = cudaHostRegisterPortable | cudaHostRegisterMapped |
++                               (pool_ro ? cudaHostRegisterReadOnly : 0);
++    {
++        static std::once_flag once_ro;
++        std::call_once(once_ro, [pool_ro, reg_flags] {
++            GGML_LOG_INFO("%s: host pool registered %s (flags=0x%x): a read-only device alias is the fast "
++                          "in-place read on a shared host/device pool (MOE_HOST_POOL_RO)\n",
++                          __func__, pool_ro ? "READ-ONLY" : "writable", reg_flags);
++        });
++    }
++    if (cudaHostRegister(p.base, p.mmap_bytes, reg_flags) != cudaSuccess) {
+         (void) cudaGetLastError();
+         return false;
+     }
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index e138bbfa1..f6dcd3c18 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -132,23 +132,46 @@ void llama_model_loader::set_host_experts_umem(bool on) {
+         return;
+     }
+     host_experts_umem = true;
++    // wip/apu-expert-pool: a shared pool does not make every host placement meaningless -- it makes the
++    // PINNED one meaningless (a whole-set pin is 2x the RAM on a pooled box, and its in-place read is the
++    // arm that faulted on gfx1151: `-ncmoe 24`/`48`, `mul_mat_q<Q2_0,16>` at a host address).  `pool`/`auto`
++    // keeps the master in the read-only model mapping (page cache / GGUF) and serves every GPU read through
++    // the bounded pinned pool, so the non-swappable part is the pool budget rather than the whole set, and a
++    // host expert set larger than the pool becomes runnable at all.  Allow it; refuse only the pinned mode.
++    // `MOE_HOST_EXPERTS_UMA=0` restores the blanket refusal verbatim (the A/B arm and the kill switch).
++    static const bool uma_off = [] {
++        const char * e = getenv("MOE_HOST_EXPERTS_UMA");
++        return e != nullptr && atoi(e) == 0;
++    }();
++    const bool pool_placement = host_experts_mode == LLAMA_HOST_EXPERTS_MODE_POOL ||
++                               host_experts_mode == LLAMA_HOST_EXPERTS_MODE_AUTO;
++    if (pool_placement && !uma_off) {
++        LLAMA_LOG_INFO("%s: this device's memory is a SHARED host/device pool (an integrated GPU); a `pool` "
++                       "host-expert placement is allowed: the masters stay in the read-only model mapping and "
++                       "every GPU read is served through the bounded pinned pool (MOE_HOST_EXPERTS_UMA=0 "
++                       "restores the refusal)\n", __func__);
++        return;   // keep the placement: do NOT zero `n_cpu_moe_from_end`
++    }
++    host_experts_umem_refuse = true;
+     // One message, and only when something actually asked for host experts: the placement is
+     // deliberately NOT a silent clamp, because on a shared pool the user's `-ncmoe N` is refused rather
+     // than half-honoured, and the run then uses the device's own memory (the whole pool).
+     if (n_cpu_moe_from_end > 0 || tensor_buft_overrides != nullptr) {
+         LLAMA_LOG_WARN("%s: this device's memory is a SHARED host/device pool (an integrated GPU), so "
+-                       "host-resident MoE experts are refused: the weights and host RAM are one pool, and the "
+-                       "expert staging tier is not available there (it would read a page the GPU cannot "
+-                       "address).  All expert weights stay on their layer's device; `-ncmoe`/`-cmoe`/`-lme` and "
+-                       "a CPU `--override-tensor` for `*_exps.*` are ignored on such a device.\n", __func__);
++                       "host-resident MoE experts are refused in this placement mode: the weights and host RAM "
++                       "are one pool, and a pinned master there cannot be read by the GPU.  All expert weights "
++                       "stay on their layer's device; `-ncmoe`/`-cmoe`/`-lme` and a CPU `--override-tensor` for "
++                       "`*_exps.*` are ignored on such a device.  Use `--host-experts pool` (or `-lme auto`) to "
++                       "stream them from the page cache / disk through the bounded pinned pool instead, or "
++                       "MOE_HOST_EXPERTS_UMA=1 to allow it here.\n", __func__);
+     }
+     // drop the placement outright, so no `blk.<i>` tail patterns are even built
+     n_cpu_moe_from_end = 0;
+ }
+ 
+ bool llama_model_loader::host_expert_selected(const std::string & name, int layer, int n_layer_trunk) const {
+-    if (host_experts_umem) {
+-        return false;   // a shared host/device pool: nothing is hosted (see set_host_experts_umem)
++    if (host_experts_umem_refuse) {
++        return false;   // a shared host/device pool with a refused placement mode (see set_host_experts_umem)
+     }
+     if (layer < 0) {
+         return false;
+@@ -178,12 +201,43 @@ void llama_model_loader::plan_host_expert_placement(int n_layer_trunk) {
+     }
+     host_experts_plan_done = true;
+ 
+-    if (host_experts_umem) {
+-        // A shared host/device pool: every expert stays on its layer's device (see set_host_experts_umem).
++    if (host_experts_umem_refuse) {
++        // A shared host/device pool with a refused placement mode: every expert stays on its layer's device
++        // (see set_host_experts_umem).
+         host_experts_plan_done = false;
+-        host_experts_policy    = "shared host/device memory pool (integrated GPU): no host expert tensors";
++        host_experts_policy    = "shared host/device memory pool (integrated GPU): no host expert tensors "
++                                 "in this placement mode";
+         return;
+     }
++    // wip/apu-expert-pool: on a shared pool an allowed pool/hole placement is only SOUND when the device can
++    // actually offer the pool-backed master (the read-only model mapping).  Without it `host_expert_buft`
++    // silently falls back to the FULL PINNED master -- which is the arm whose in-place read faulted on
++    // gfx1151 (`-ncmoe 24`/`48`, `mul_mat_q<Q2_0,16>`) -- and the operator gets neither the tier they asked
++    // for nor the truth about it.  Refuse the placement instead and keep the experts on the device: the
++    // default then does exactly what it does today until the pool tier is complete, and says so.
++    if (host_experts_umem && use_mmap) {
++        bool master_ok = false;
++        for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
++            ggml_backend_dev_t d = ggml_backend_dev_get(i);
++            if (ggml_backend_dev_moe_host_master_buft(d) != nullptr) {
++                master_ok = true;
++                break;
++            }
++        }
++        if (!master_ok) {
++            host_experts_umem_refuse = true;
++            host_experts_plan_done   = false;
++            host_experts_policy      = "shared host/device memory pool (integrated GPU): no pool-backed master "
++                                       "on this backend build, so the placement is refused (a pinned master "
++                                       "there is the arm that faults)";
++            LLAMA_LOG_WARN("%s: a `pool` host-expert placement on a shared host/device pool needs the "
++                           "pool-backed (model-mapping) master, which this backend does not offer for an "
++                           "integrated device (%s).  The placement is REFUSED rather than falling back to the "
++                           "full pinned master, which is the arm that has faulted here.  Experts stay on their "
++                           "layer's device.\n", __func__, "ggml_backend_cuda_device_moe_host_master_buft");
++            return;
++        }
++    }
+ 
+     // --- 1. the candidate set and its byte total ------------------------------------------------
+     // The loader owns the whole GGUF index (`weights_map`) before the arch creates a single tensor, which is
+@@ -1964,7 +2018,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+                         });
+                         continue;
+                     }
+-                    if (overrides->buft == ggml_backend_cpu_buffer_type() && host_experts_umem) {
++                    if (overrides->buft == ggml_backend_cpu_buffer_type() && host_experts_umem_refuse) {
+                         // A shared host/device memory pool (an integrated GPU): hosting an expert here is a
+                         // page the GPU cannot address (see set_host_experts_umem).  Keep it on the device.
+                         static std::once_flag once_umem;
+diff --git a/src/llama-model-loader.h b/src/llama-model-loader.h
+index 489a0cabe..660e7af55 100644
+--- a/src/llama-model-loader.h
++++ b/src/llama-model-loader.h
+@@ -87,14 +87,19 @@ struct llama_model_loader {
+     // wip/host-expert-tier: `-lme, --limit-host-experts` (-1 = unset, 0 = auto, >0 = GiB).
+     int64_t host_experts_limit_gib = -1;
+     // A shared host/device memory pool (an integrated GPU, e.g. gfx1151): "host" and "device" are ONE
+-    // physical pool, so hosting an expert set there buys no capacity AND the tier that serves a host master
++    // physical pool, so a PINNED host expert master buys no capacity AND the tier that serves a host master
+     // is denied on such a device (`moe-expert-cache.cu` refuses the arena on a shared pool), which leaves the
+-    // consumer reading a buffer the GPU cannot address -- a GPU page fault.  Set once from the model's device
+-    // list before any placement decision; every host-placement path below returns early when it is true and
+-    // the experts stay on their layer's device.  Measured on halo/gfx1151 (r236): `-ncmoe 48` on
+-    // Qwen3.8-Flash-Next GSQ-IQ3_XXS faulted in `mul_mat_q<Q2_0,16>` at a host address, and `-ncmoe 24` too,
+-    // while `-ncmoe 0` ran; the same arms fault on the pre-re-base r235 binary.
+-    bool host_experts_umem = false;
++    // consumer reading a buffer the GPU cannot address -- a GPU page fault.  Measured on halo/gfx1151 (r236):
++    // `-ncmoe 48` on Qwen3.8-Flash-Next GSQ-IQ3_XXS faulted in `mul_mat_q<Q2_0,16>` at a host address, and
++    // `-ncmoe 24` too, while `-ncmoe 0` ran.
++    // Set once from the model's device list before any placement decision.
++    // wip/apu-expert-pool: the topology is not a verdict on the PLACEMENT MODE.  A `pool`/`auto` placement is
++    // a different mechanism (the tensors stay in the read-only model mapping and every GPU read is served
++    // through the bounded pinned pool), it is what makes a host expert set larger than the pool runnable,
++    // and on a shared pool it is the *only* meaningful tier -- so it is allowed; only `pinned` is refused.
++    // `MOE_HOST_EXPERTS_UMA=0` restores the blanket refusal (A/B and kill switch).
++    bool host_experts_umem = false;         // the weights are going to a shared host/device pool
++    bool host_experts_umem_refuse = false;  // ...and host-expert placement is refused on it (see above)
+     // The resolved placement plan (see `plan_host_expert_placement`).  `host_experts_plan_done` false means
+     // no plan was made and `host_expert_buft` keeps the historical mode-keyed decision.
+     bool  host_experts_plan_done = false;
+@@ -148,7 +153,8 @@ struct llama_model_loader {
+     void plan_host_expert_placement(int n_layer_trunk);
+ 
+     // Tell the loader that the weights are going to a shared host/device memory pool (an integrated GPU).
+-    // Called before `plan_host_expert_placement`; refuses every host-expert placement with one message.
++    // Called before `plan_host_expert_placement`.  A `pool`/`auto` placement is allowed there; `pinned` (and
++    // `MOE_HOST_EXPERTS_UMA=0`) refuses every host-expert placement with one message.
+     void set_host_experts_umem(bool on);
+ 
+     // The `-ncmoe` tail rule / caller CPU-override match for one tensor (the placement the loader will make).
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index 49ff4209f..c538d3d58 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1742,10 +1742,37 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+     this->ml = &ml; // to be used by create_tensor() and load_arch_tensors()
+ 
+     if (ml.use_mmap && params.load_mode == LLAMA_LOAD_MODE_AUTO) {
++        // wip/apu-expert-pool: `caps.mmap_support` is false for an iGPU BY CONSTRUCTION (the HIP backend sets
++        // it to `type != IGPU`), so `--load-mode auto` resolves to `none` on an APU and the host-expert pool
++        // tier loses the model mapping it is built on -- measured on gfx1151: `-ncmoe 8 --host-experts pool`
++        // silently keeps the FULL PINNED master (`ROCm_Host` 4329 MiB instead of the 3814 MiB pool mirror),
++        // which is the arm whose in-place read is the one that has faulted there.  When the operator asked for
++        // AUTO and a host-expert placement actually needs the mapping, keep mmap: the model mapping IS the
++        // pool-backed master, both the load and every fill are ordinary reads of it, and a forced
++        // `-lm mmap` arm runs byte-identical to the resident one (measured).  `MOE_UMA_MMAP=0` restores the
++        // iGPU exclusion for an A/B.
++        const bool uma_mmap_wanted =
++            (params.host_experts_mode == LLAMA_HOST_EXPERTS_MODE_POOL ||
++             params.host_experts_mode == LLAMA_HOST_EXPERTS_MODE_AUTO) &&
++            (params.n_cpu_moe_from_end > 0 || params.tensor_buft_overrides != nullptr) &&
++            [] {
++                const char * e = getenv("MOE_UMA_MMAP");
++                const char * k = getenv("MOE_HOST_EXPERTS_UMA");
++                return (e == nullptr || atoi(e) != 0) && (k == nullptr || atoi(k) != 0);
++            }();
+         for (const auto & dev : devices) {
+             ggml_backend_dev_props props;
+             ggml_backend_dev_get_props(dev.dev, &props);
+             if (!props.caps.mmap_support) {
++                if (uma_mmap_wanted && props.type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
++                    static std::once_flag once_uma_mmap;
++                    std::call_once(once_uma_mmap, [] {
++                        LLAMA_LOG_INFO("%s: keeping mmap on a shared-pool iGPU: a host-expert placement needs "
++                                       "the model mapping as its pool-backed master (MOE_UMA_MMAP=0 restores "
++                                       "the iGPU mmap exclusion)\n", "load_tensors");
++                    });
++                    continue;
++                }
+                 ml.use_mmap = false;
+                 break;
+             }
+-- 
+2.56.0
+
