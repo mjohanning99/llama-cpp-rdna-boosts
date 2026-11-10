@@ -172,6 +172,8 @@ measured FRESH) is a one-line-class change that must be A/B'd on **both** boxes.
 | [`IMPLEMENTATION.md`](IMPLEMENTATION.md) | the phased plan: code touch points, env surface, gate script spec, docs, rollback, effort |
 | [`MEASUREMENTS.md`](MEASUREMENTS.md) | the probe log: box config, every number, reproduction commands |
 | [`probe/`](probe/README.md) | the ten probe programs behind those numbers (they change nothing and need no root) |
+| [`HANDOVER.md`](HANDOVER.md) | **cold-start document**: repos/commits, build+run, what is implemented and measured, the ordered next steps with acceptance criteria, and ten landmines |
+| [`NEXT-SESSION-PROMPT.md`](NEXT-SESSION-PROMPT.md) | the prompt to hand a fresh session (points at the handover) |
 | [`0001-uma-pool-placement-scaffolding.patch`](0001-uma-pool-placement-scaffolding.patch) | the first development increment, cut against the r243 tree (`e9300f1`): gates #1 and #4 ungated for the pool mode + the safety guard on #5 + the read-only pool registration.  Applies with `git am`; it changes the default on an APU **not at all** until P2 lands |
 
 ## 11. Development log — 2026-11-09 (P2 increment, `0002`)
