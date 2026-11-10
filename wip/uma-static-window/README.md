@@ -6,95 +6,32 @@ This campaign exists because the previous one
 ([`archive/work/apu-expert-pool/`](../../archive/work/apu-expert-pool/CONCLUSION.md)) disproved its own thesis.  Read
 the CONCLUSION first; this file assumes it.
 
-> ### P2 verdict (2026-11-10, evening — the full record: [`p0/RESULTS.md`](p0/RESULTS.md) §L)
+> ### P2 verdict (2026-11-10 — the full record: [`p0/RESULTS.md`](p0/RESULTS.md) §L and §M)
 >
-> **7. The zero-copy window now WORKS and is free — and it cannot be PARTIAL, which is what ends the 122B arms.**
+> **7. The zero-copy window is CORRECT, and a PARTIAL window WORKS — the campaign's headline case is measured.**
 > Two layout defects (not the file-offset arithmetic §K suspected) produced the wrong data, both invisible to a
 > bandwidth probe: the kernel indexes the cold stride in **type blocks**, so a pitch of `host_bytes + page`
 > truncated 64 B/slot and drifted linearly; and a pitch of `host_bytes` makes consecutive slots **share a page**,
-> which is coherent only when the next slot's expert is file-adjacent — never true for a heat ranking.  The pitch
-> is now the smallest multiple of `lcm(page, ggml_type_size)` that holds the expert plus its file-offset residue
-> (35B: 589824 -> 626688, +6.25 % of address space; 122B: 3342336 -> 3411968), registered **per slot**, with the
-> window **refused** (falling back to the copy pool) when a tensor's stride is not a page multiple.  Measured,
-> 35B `-ncmoe 40`, `-n 96 seed 42`: **377 chars `sha=ae39ec41bc1e`** — the reference text — at **59.2 t/s**, heat-ranked,
-> `fills=0 evictions=0`, **cold 99.61 %**, 18662 MiB pinned for **~0 MiB** of pinned RAM; a second prompt
-> (`prompts/code-reasoning-mixed.txt`) matches byte for byte (`sha=ff86b6990ce7`).  `p0/arms.sh window-pool`.
-> **But a window must cover every expert of every table it serves**: the cold-id space has exactly two levels (an
-> arena slot, or `n_res + cold index` at ONE stride), so a partial window makes every routed op unrepresentable
-> and the layer falls to the scheduler's host upload.  Measured at 88 GiB on the 122B: the window builds
-> (`206/256` slots/table, 94554 MiB, `fills=0`) and the run decodes at **0.9 t/s** with `9360 of 9360` remap offers
-> declined.  The complement cannot be covered by an arena either (23 GiB of copy beside an 88 GiB window, before
-> the 8.6 GiB of weights).  **So the 122B decode/prefill window arms are unreachable on this box by construction
-> — and so is the capacity rig's.**  One thing could lift it and is NOT built: an **unregistered** `MAP_SHARED`
-> file mapping is device-readable on this box at the same band as a registered read (4/4 runs, byte-exact), while
-> fresh **anonymous** pageable memory faults — i.e. the map+register step may itself be unnecessary.  What that
-> probe does not answer is what the GPU does when such a page is **reclaimed mid-kernel**, which is the whole
-> question for a >RAM working set (RESULTS §L.6).
-
-> ### P0 verdict (the full record, arms and censuses: [`p0/RESULTS.md`](p0/RESULTS.md))
+> coherent only when the next slot's expert is file-adjacent — never for a heat ranking.  The pitch is now the
+> smallest multiple of `lcm(page, ggml_type_size)` that holds the expert plus its residue (35B 589824 -> 626688,
+> 122B 3342336 -> 3411968), registered per slot, refused when a stride is not a page multiple.  35B `-ncmoe 40`,
+> `-n 96 seed 42`: **377 chars `sha=ae39ec41bc1e`** (the reference) at **59.2 t/s**, heat-ranked, `fills=0`,
+> **cold 99.61 %**, for ~0 memory; a second prompt matches byte for byte.  **Partial coverage needed three fixes,
+> none of them new kernel machinery**: a window-served expert must never be *admitted* into the arena (it is already
+> one load away, and it competes for the very slots the complement needs); a window must be exempt from the arena's
+> complement *re-layout*, which was silently freeing the hottest 8 slots per table and could never refill them; and
+> the device budget must cover the work region + the H2D-ring hole + the arena.  With those, the 122B runs at
+> **13.5 t/s (88 GiB window) / 15.0 t/s (96 GiB)** against the CPU path's **8.0** — **+69 % / +88 %**, text
+> byte-identical to the copy-pool reference (`sha=58c95d8789b0`), `decline_all` down from `9360/9360` to a handful.
 >
-> **1. The transport is free (PASS).**  99.48 % of routed expert accesses served **in place** from a
-> registered **read-only** pool, one arena slot per table: **59.8 / 60.1 t/s** against **62.7 / 62.9**
-> with every expert on the device and **35.0 / 35.1** for the CPU expert path — **+71 % over the CPU path,
-> −4.5 % against device memory.**  Nothing here is a compromise, and the machinery already exists.
->
-> **2. One routed op mixes window + in-place experts for free, but it cannot mix GPU with CPU-computed
-> experts — and the delivered split granularity is the TABLE, not the expert.**  A per-expert window inside
-> the GPU is smooth (5→75 % window: 53.3/55.6/58.3/59.3 t/s).  But a table that gets no GPU representation
-> falls to the CPU and the **whole** decode drops to CPU parity (96/120 tables served on the GPU → 35.5;
-> 81/120 → 34.5; CPU path → 35.0).  The split is a **cliff**: it is a fixed per-token cost of having a
-> CPU-side MoE chain at all, not a proportional one.  §2's "the split is per expert" is what the *heat prior*
-> ranks, not what the graph can express.
->
-> **3. The remap survives a captured decode graph (PASS).**  `graphs reused = 94` for a 96-token decode,
-> `graph reallocs = 4 / 0`, `device remap: 11640 tables served, 0 declined`, no per-token host readback, text
-> byte-identical to the all-device arm.  Publishing the map once is an **optimisation, not a requirement**:
-> the per-op remap costs ≤ 1 %.
->
-> **4. Addendum (same day, `p0/RESULTS.md` §A-C): the window and the device are the same memory at the same
-> speed.**  `p0/band.cpp` measures a registered read-only window at **231.0 GB/s against `hipMalloc`'s
-> 232.1** at 320 routed rows, 227.4 vs 228.0 at 128 — identical at every shape — and shows the band is set
-> by the **launch shape**, not the backing (8 routed rows/launch = **95-103 GB/s**, >=32 rows = 205-232; a
-> 1024-thread block lifts 8 rows to 177).  The read-only flag itself is inert to the read (that is why
-> `cold100-strict` and its writable twin tie).  On this box a window is therefore *device memory plus a
-> copy*, and the only thing that varies is capacity — which the 122B does not have: `-ncmoe 24` (57.4 GiB
-> of experts on the device) measures **8.5 t/s steady state against `-ncmoe 48`'s 8.0**, i.e. nothing, and
-> its recorded 10.9 is a **capacity** wall (3.8 GiB/token at the CPU's 41 GB/s).  Long generations confirm
-> the static premise but small: a cold start gains **+2.0/+4.2 %** between the first 96 and the next 416
-> tokens, while the **persisted prior is worth ~+6 % at token 1** (`window50` 58.0 seeded vs 52.8 cold).
-> **So the campaign's home is the capacity-constrained case — the 56 GiB ballast rig, where the copy tier
-> already measures 44.0 vs the CPU path's 31.0 (+42 %) — not a >RAM model on a 123 GiB box, which has no
-> slack to give.**  P1 target: beat the copy tier there with the static window.
->
-> **5. P1 (capacity-constrained rig, `p0/RESULTS.md` §F): the window has no configuration left on this box.**
-> IQ4_NL under a 31 GiB ballast, `-ncmoe 24` (31.6 GiB host set), `-n 384`: the **shipped tier is 26.3 t/s**
-> against the **CPU path's 14.8** -- its win is **capacity** (24.1 GiB arena + 21.5 GiB pool = 45.6 GiB of a
-> 63 GiB set, h = 0.925), not transport.  A static window must *cover every table it serves*, which here means
-> pinning the whole host set: 31 (ballast) + 34.4 (device) + 31.6 (pinned) = 97 GiB against 88 available, so it
-> cannot be built at a budget that fits.  A partial window is predicted to lose (P0: per-table split, cliff).
-> **The recorded "44.0 / 31.0 t/s" references for this model have the same provenance problem as the 122B's
-> (CONCLUSION-only, no arm, and `wip/bench-56gb/RESULTS.md` never ran IQ4_NL).**  Net: fits -> the window equals
-> a device placement; >RAM -> no slack; capacity-constrained -> the window cannot cover its tables.  Recommend
-> closing the campaign as a **negative with two kept results** (the launch-shape band, §A; and the reference
-> correction, §C/§F) -- the decision is the maintainer's, and nothing here is in `patches/`.
->
-> **6. The 122B question, answered as a bound (`p0/RESULTS.md` §G).**  *Is there any path on which the campaign
-> beats stock for Qwen3.5-122B-A10B Q8_0 here?*  **No, and the bound is stricter than the campaign's own arms:**
-> `-ncmoe 24` already puts **57.4 GiB of the 114.8 GiB expert set on the device** (f = 0.5) where the GPU reads it at
-> 232 GB/s with **no copy, no registration, no fill, no eviction, no per-op remap** — a strict superset of what a
-> window offers — and it measures **8.5 t/s against 8.0 (+6 %)**.  The reason is that the 122B is 7.4 GiB larger
-> than this box, and pinning `f` takes `f` out of the page cache at the same time, so the share streaming from NVMe
-> **rises** with `f` (6.4 % -> 8.1 % -> 10.7 %).  A window changes *who reads*, never *how many bytes need reading*;
-> it pays only where reads, not capacity, are the limit — which for this model on this box they are not.
->
-> **The stop rule is not triggered, but §3's arithmetic is.**  No measured arm overlapped the CPU part with
-> the GPU part, so the honest model is **additive**, and on a 123 GiB box the window size is bounded by what
-> can be **pinned** out of the same 123 GiB the page cache needs.  The 2–3x target on the 122B is **not
-> reachable**; a realistic target is **+10–40 % at a 20–40 % window** (+43 % predicted at 40 %).  The campain's
-> aim becomes: *the pinned fraction runs at device speed, the window never leaves a table unserved*, and a
-> static window's real win over the shipped tier is that it removes the 1 000–17 000 fills per 96 tokens the
-> LRU does today.  **The read-band question is still open** (the 35B is latency-bound at 46 GB/s of effective
-> expert traffic and cannot resolve 60 vs 230 GB/s) — see §9.4.
+> **8. And the memory argument that killed the 122B was a myth: a registered window is NOT pinned.**  `Unevictable`
+> and `Mlocked` stay **0** for the whole run, `Cached` grows to ~100 GiB and `MemAvailable` only dips ~17 GiB for an
+> 88 GiB window: a window over `MAP_SHARED|PROT_READ` file pages is a *device mapping over the page cache*, not
+> locked RAM.  Its pages are reclaimable and shared with the CPU path, so its cost is page cache and its size is not
+> bounded by a pin budget — which is why 88-96 GiB windows run with no swap.  §H's "96 GiB + 8.6 GiB of weights does
+> not fit" was the wrong conclusion from the right measurement (§I.1's "MemAvailable moved 127 MiB for 24 GiB" is
+> the same fact).  The remaining gap against the prior's own 97.2 %-of-mass prediction (88-93 % measured) is
+> **prior transfer** across prompts, not ranking.
 
 Cut against the **r243 tree** (`release.json`: tip `72f7753f`, tree `e9300f1`).  Every file this campaign cites is
 identical to r242's (r243 touched only `src/models/qwen4exp.cpp`).

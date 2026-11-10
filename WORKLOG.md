@@ -1,3 +1,43 @@
+## 261110.013 (wip) -- `uma-static-window` P2b: the PARTIAL window works (122B **13.5-15.0 t/s against the CPU path's 8.0**) and the "pinned" cost was a myth
+
+**Campaign branch only; opt-in; nothing in `patches/`; `release.json` untouched; no default changed.**  Record:
+`wip/uma-static-window/p0/RESULTS.md` §M.  The maintainer's call was to fund the fork and make a partial window work,
+because that is the campaign's headline; **it works, and it needed no new kernel machinery** — §L.5's "the cold-id
+space cannot express a partial window" was wrong, the *arena* is the complement's home.
+
+**Three fixes (fork `wip/uma-static-window`):**
+1. a **window-served expert is never admitted into the arena** (`pool_window_serves_locked`): it is already one load
+   away, and admitting it spent a D2D copy *and* the slot the complement needs;
+2. a **window is exempt from `pool_rerank_from_heat_locked`** — that re-layout *frees* slots it cannot refill (a
+   window's pages are `PROT_READ`), and because the arena seeds from the same prior it was freeing **the hottest 8
+   slots per table**: measured 92.2 % in-place against the prior's own 97.8 % prediction, plus rate;
+3. sizing (not code): the device budget must cover work + the H2D-ring hole + the arena, so the 122B needs
+   `GGML_CUDA_SLAB_MIN_ARENA_MIB` below its 2048 MiB floor and ~26 GiB of `MOE_EXPERT_CACHE_MIB`; otherwise the cache
+   declines and the run is `STREAMING` at 0.9 t/s with nothing in the census that says so.
+
+**Measured (Qwen3.5-122B-A10B Q8_0, `-ncmoe 48`, `-c 4096`, `-n 64 seed 42 temp 0`, `-t 12`):** CPU expert path
+**8.0 t/s**; window 88 GiB + 8-slot arena **13.5**; 88 GiB + 16 slots 13.7; **96 GiB + 8 slots 15.0 (+88 %)**.
+In-place share 89-93 %, `decline_all` from `9360/9360` (the §L.5 negative) down to 423 of 9504, no swap.  Text
+verified against the copy-pool reference on the same kernel path: `-n 32` both **146 chars
+`sha=58c95d8789b0`**.  The 35B at a 50 % window is `decline_all=0`, 59.4 t/s, reference text.
+
+**The campaign's memory argument was a myth, and this is the number that changes the design:** a registered window is
+**not pinned**.  Sampled every 2 s through an 88 GiB window on the 122B: `Unevictable` and `Mlocked` stay **0**,
+`Cached` ~100 GiB, `MemAvailable` dips only to 97.7 GiB (from 117.4).  A window over `MAP_SHARED|PROT_READ` file
+pages is a *device mapping over the page cache* — reclaimable, shared with the CPU path, and not bounded by a pin
+budget.  So §H's "96 GiB pinned + 8.6 GiB of weights does not fit a 116 GiB box", which is what made the 122B look
+unreachable, was the wrong conclusion from the right measurement (§I.1's "MemAvailable moved 127 MiB for 24 GiB" is
+the same fact).  The census line that says `… MiB pinned` is a claim about the *registration*, not about locked RAM.
+
+**Remaining gap, named:** the prior says the window's slot set carries **97.20 %** of each layer's routed mass (the
+window now logs that line); measured in place is 88-93 %.  That is **prior transfer** across prompts, not
+mis-ranking — so the honest model for §H's arithmetic is in-place ≈ prior − a few %, i.e. ~0.93 at 88 GiB, not
+0.999.  Next: the **122B prefill** arm (§J's 175.2 t/s / 9.98 s of fill memcpy) is still unmeasured, and it is now
+the cheap one to run because the window no longer has a memory argument against it; then the capacity rig.
+
+New in the harness: `p0/pageref.cpp` (can the GPU read *pageable* file pages — the fork-B question; it faults above a
+few MiB, so a complement must be registered).
+
 ## 261110.012 (wip) -- `uma-static-window` P2 FIXED: the zero-copy window is correct and free, and the constraint it exposes ends the 122B arms
 
 **Campaign branch only; opt-in env values; nothing in `patches/`; `release.json` untouched; no default changed.**

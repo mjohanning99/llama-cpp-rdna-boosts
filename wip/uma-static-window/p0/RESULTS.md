@@ -700,3 +700,84 @@ device alias at all).  Two traps in reading this:
   one of those pages is **reclaimed** mid-kernel (a GPU fault is a queue hang, not a retry) — and a 96 GiB working
   set on a 123 GiB box is exactly a reclaim scenario.  The three faults in this session's journal are this probe's
   (they are `read_rows_bw`), not a delivery arm's; every product arm was clean.
+
+---
+
+# M. P2b — the PARTIAL window WORKS (2026-11-10).  The constraint in §L.5 was a config bug, and the "pinned" cost was a myth
+
+§L.5 said a window cannot be partial because the cold-id space has two levels.  **That was wrong** — the two levels
+are enough: the *arena* holds the routed complement.  Three things stood in the way, all now fixed on the campaign
+branch, and one measurement in §L was misread.
+
+## M.1 What actually blocked a partial window
+
+1. **A window-resident expert was being admitted into the arena.**  `access_locked` treats "the cold read can serve
+   this" (`cold_ok`) as permission to admit an expert into the arena under the usual hotness policy, so a window's
+   experts competed for the very slots the *complement* needs (and each admission was a pointless D2D copy of bytes
+   that were one load away).  Fix: `pool_window_serves_locked()` — a window is static and keep-all, so a
+   window-served expert is served in place and **never** admitted.
+2. **The pool re-layout was silently evicting the window's hottest slots.**  `pool_rerank_from_heat_locked()` (the
+   arena's complement re-layout) **frees** every slot whose expert is not in its wanted set and then *fills* the
+   wanted ones — but a window cannot be filled (`pool_fill_empty_locked` refuses: its pages are `PROT_READ`).  The
+   arena seeds its slots from the same prior, so every seeded expert is "not wanted" as a complement expert: 8 slots
+   per table — **the hottest 8** — were freed and never came back.  Measured cost: in-place share 92.2 % against the
+   prior's own 97.8 % prediction, plus rate.  Fix: a window returns from that function immediately (write-once by
+   construction).
+3. **Sizing, not code**: the device budget must cover the work region + the H2D-ring hole + the arena, so with the
+   122B's ~7 GiB of resident weights the slab needs `GGML_CUDA_SLAB_MIN_ARENA_MIB` lowered (the 2048 MiB floor) and
+   ~26 GiB of `MOE_EXPERT_CACHE_MIB`; otherwise the cache declines and the run is `STREAMING` (= the CPU path) at
+   0.9 t/s with **nothing in the log's census** to say so.
+
+With those: **`decline_all=0`** on the 35B at a 50 % window, and every op served (takeover 11 760).
+
+## M.2 The `pinned` cost was a myth: a registered window is not pinned
+
+The census prints `host pool (L2): … 95472.0 MiB pinned`, and §H's whole memory argument ("96 GiB pinned + 8.6 GiB of
+weights does not fit") was built on that word.  **Nothing is pinned.**  Sampled every 2 s during an 88 GiB window on
+the 122B:
+
+| | before | during | after |
+|---|---|---|---|
+| `MemAvailable` | 117.4 GiB | **min 97.7 GiB** | 106.5 GiB |
+| `Cached` | 101.4 GiB | ~100 GiB | 100.9 GiB |
+| `Unevictable` / `Mlocked` | 0 / 0 | **0 / 0** | 0 / 0 |
+
+So a window over `MAP_SHARED|PROT_READ` file pages is a **device mapping over the page cache**, not locked RAM: the
+pages are reclaimable, shared with the CPU path, and a re-fault reads them back from the file.  Its cost is *page
+cache*, and its size is not bounded by a pin budget.  That is why 88-96 GiB windows now run with no swap and ~100 GiB
+of `MemAvailable` — and why §H's "a 96 GiB window does not fit beside the weights" was the wrong conclusion from the
+right measurement (`p0/RESULTS.md` §I.1's "MemAvailable moved 127 MiB for 24 GiB" was the same fact).
+
+## M.3 The 122B, measured (this is the campaign's headline number)
+
+Qwen3.5-122B-A10B Q8_0, `-ncmoe 48 --host-experts pool -lm mmap`, `-c 4096`, `-t 12`, `-p "The capital of France is"
+-n 64 seed 42 temp 0`.  Window = `MOE_HOST_POOL_MIB`, arena = `MOE_EXPERT_CACHE_SLOTS` per table,
+`GGML_CUDA_SLAB_RESERVE_MIB=1024 GGML_CUDA_SLAB_MIN_ARENA_MIB=64 `MOE_EXPERT_CACHE_MIB=26624``.
+
+| arm | in place (census `cold`) | arena hits+fills | **generation** | vs CPU path |
+|---|---|---|---|---|
+| CPU expert path (P0 §C) | — | — | **8.0 t/s** | — |
+| `-ncmoe 24`, 57.4 GiB on the device (P0 §C) | — | — | 8.5 t/s | +6 % |
+| window 88 GiB, arena 8 | 93.2 % | 6.8 % | **13.5 t/s** | **+69 %** |
+| window 88 GiB, arena 16 | 89.0 % | 11.0 % | 13.7 t/s | +71 % |
+| window 96 GiB, arena 8 | 92.8 % | 7.2 % | **15.0 t/s** | **+88 %** |
+
+Before the §M.1 fixes the same 88 GiB arm was **0.9 t/s** (`9360 of 9360` remap offers declined) — the §L.5 negative.
+
+**Text is correct**, which is the only thing that makes the rates meaningful: `-n 32` on the window arm and on the
+copy-pool reference (same GPU kernel path) both give **146 chars `sha=58c95d8789b0`**.
+
+## M.4 Why 13.5-15 t/s and not the ~26-48 the prior implied
+
+The prior's own prediction for the window's *slot set* is **97.20 %** of each layer's routed mass (207 of 256
+experts — the window logs this line).  Measured in place: **88-93 %**.  The gap is **prior transfer**, not
+mis-ranking: the persisted `MHT2` prior is 5M accesses from other prompts, and a fresh prompt routes ~5 % of its mass
+outside that top-207.  So the honest model is:
+
+* in-place share ≈ prior prediction − (a few) % per prompt; at 88 GiB that is ~0.93, not 0.999;
+* the miss traffic is therefore ~0.07 × 3.8 GiB/token ≈ 270 MiB/token, which at the window's ~100 GB/s band plus the
+  arena's fill copies is what puts the measured 13.5-15 t/s where it is (0.93 × 3.8 GiB / 100 GB/s ≈ 39 ms → 26 t/s
+  was the no-transfer-doubt bound; the extras are the 7 % misses and the eager path's per-op host readback, the
+  `pool_covers_table` test being false so the device remap declines — `decline_all=423`).
+* the prefill question (§J's 175.2 t/s baseline, 9.98 s of it fill memcpy) is untouched by this session and remains
+  the next measurement: it needs its own arm, and the window is now known not to cost memory.
