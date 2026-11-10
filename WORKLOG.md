@@ -1,7 +1,58 @@
-## 261109.009 (wip) -- `wip/apu-expert-pool` opened: the host-expert / expert-arena tier is hard-gated off on UMA APUs, and the measurements say the reasons for the gate are a *sizing* defect plus an unexplained fault, not a limit
+## 261110.001 (wip) -- `apu-expert-pool` CLOSED and archived; `wip/uma-static-window` opens with the design the measurements actually support
+
+**Nothing in `patches/`; `release.json` untouched.**  The campaign spent 2026-11-09/10 trying to open the *shipped
+discrete* expert tier (arena + pinned pool + copies) on a UMA APU by budgeting it from `MemAvailable`.  Its own
+measurements disproved the thesis, so it is closed and moved to
+[`archive/work/apu-expert-pool/`](archive/work/apu-expert-pool/CONCLUSION.md) (with a CONCLUSION.md, banners on every
+document and an OBSOLETE header on its `NEXT-SESSION-PROMPT.md`); the `wip/` entry is gone per the no-stub rule.
+`WORKLOG.md` references to the old path now point at the archive.
+
+**What killed it.**  `probe/11-fill-path.cpp` (new, archived with the campaign) established that the slab's
+`hipMemCreate` arena is **not host-writable** (a host dereference faults; `hipMalloc` is, which is what the earlier
+probes had measured), so every fill is a copy; and that a registered-anon buffer reads at **198.7 GB/s** against the
+arena's **194.3 GB/s** -- the same DRAM either side.  The tier's copy therefore buys nothing on UMA, where on a
+discrete card it buys ~13x (VRAM ~640 GB/s against a 41.1-55.8 GB/s link).  Measured on Qwen3.5-122B-A10B Q8_0
+(123.4 GiB, **114.8 GiB of it expert tensors**), `-ncmoe 48 -c 32768`, three 600-token passes: cache off (the CPU
+expert path) **10.58 / 10.90 / 10.89 t/s**; arena 32 GiB **3.75 / 3.82 / 3.04**; arena auto (~70 GiB)
+**3.29 / 2.84 / 2.36** -- 3x slower with 75-110 GiB free.  Three further findings: the slab needs work + a 2 GiB floor
++ the ring (**~9 GiB** for that model) before it arms at all, below which the cache prints `STREAMING the experts
+from the host` and the arm is silently the CPU path (2 GiB and 8 GiB arms were misread as tier arms); a zero-arena
+tier registers **no tables** (`g_tables` empty, CPU 772 % / GPU 27-34 %, identical to untiered); and a
+read-only-registered tier cannot be *filled* at speed (register-then-fill **70-210 MB/s** against ~7 GB/s the other
+way).  Where the tier does win: when the routed set fits the arena -- IQ4_NL (A3B) under a 31 GiB ballast,
+**44.0 t/s** against the CPU path's 31.0 (+42 %), MTP drafter at ~0.53 acceptance.
+
+**The rule that came out of it.**  At batch 1 a sparse MoE decode is memory-movement bound: the 122B routes ~3.8 GiB
+of expert bytes per token, the CPU reads them in place at ~41 GB/s effective (10.9 t/s), and a GPU reading a resident
+window could do ~194 GB/s (~51 t/s) -- but only if it pays neither a copy nor a per-op host round-trip.  On UMA the
+goal is therefore **not residency** (the page cache already holds the bytes) but **the GPU reading them where they
+are**.
+
+**Four real defects were found and kept** (fork branch `wip/apu-expert-pool`, commit `70e0eda4a`; they affect the
+shipped path, not only UMA): the arena allowance is net of what is already on the device and the slab maps it **on
+demand** (a 84.00 GiB map for 22.8 GiB of tables produced a 51 GiB swap storm that never finished the load);
+`pool_clamp_slots_to_ram()` keys on the **effective** percentage, so the pool's RAM ceiling binds (a 22 775 MiB
+mirror against a 12 100 MiB ceiling before); `MOE_UMA_VRAM_PCT` is parsed once and travels with the free-memory
+snapshot (the advisory used to hardcode 75 %); and `--lazy-mode auto` resolves against the **declared load mode**, so
+an APU with `-lm mmap` no longer holds a 27 465 MiB table resident.
+
+**Opened in its place:** [`wip/uma-static-window/`](wip/uma-static-window/README.md) -- a heat-ranked, read-only
+**static** window: select the hottest experts once from the persisted prior, copy them once, **then** register
+read-only, publish the expert->slot remap once, and let the GPU read in place while the complement stays on the CPU
+expert path.  Its P0 is a decision (is 100 %-in-place service at least CPU-parity, and can one routed op mix
+window-resident with CPU-served experts) with an explicit stop rule, before any code.
+
+**Harness lessons recorded in the archived `MEASUREMENTS.md`/CONCLUSION:** a dead server must not hang a measurement
+(two arms sat 10-24 minutes on a server that had died; the health poll must watch the process, every request needs a
+`timeout`, and the workload must run in its own session so one `SIGKILL` ends it), and the exit census does not
+reliably print on `llama-server` `SIGTERM` (1 of 6 arms -- use `llama-cli` or add a mid-run report).
+
+---
+
+## 261109.009 (wip) -- `archive/work/apu-expert-pool` opened: the host-expert / expert-arena tier is hard-gated off on UMA APUs, and the measurements say the reasons for the gate are a *sizing* defect plus an unexplained fault, not a limit
 
 **Scoping note + a completed measurement foundation, nothing implemented** (no `patches/` change, nothing
-applied to the fork, no `TODO` opened -- the open decisions are `wip/apu-expert-pool/README.md` §7).  The tree
+applied to the fork, no `TODO` opened -- the open decisions are `archive/work/apu-expert-pool/README.md` §7).  The tree
 was pulled to r243 before writing, and every file the plan cites is unchanged by r243 (that release touched only
 `src/models/qwen4exp.cpp`).
 
@@ -33,7 +84,7 @@ untiered (`hipMalloc` **232.6** GB/s, registered-RO page cache **230.5**) **exce
 **zeros with no fault** (silent weight corruption), and dirty anon pool pages cost nothing to discard
 (`pswpout=0`/`pgpgout=0` for 4 GiB in 0.26 ms) but would be swapped if the kernel's reclaim owned them.
 
-**The plan** (`wip/apu-expert-pool/IMPLEMENTATION.md`): **P0.5** read-only registration for the pool's device
+**The plan** (`archive/work/apu-expert-pool/IMPLEMENTATION.md`): **P0.5** read-only registration for the pool's device
 alias (`MOE_HOST_POOL_RO`, default on) -- the 60->233 GB/s fix, which the PCIe link masks on a discrete box and
 which therefore needs an A/B on both; **P1.0** root-cause the fault; **P1** enable `--host-experts pool` on
 `IGPU` -- the mechanism already ships for discrete as the `ROCm_HostMap` buft (`ggml-cuda.cu:4970`,
@@ -44,7 +95,7 @@ soft-evict via the existing `g_prov_evict` state); **P3** one budget for pool+ar
 policy unification.  Gate: `scripts/gate-uma-arena.sh`, 8 arms, text hashed with **no `-lv`**, censuses at
 `-lv 4`.
 
-**Records:** `wip/apu-expert-pool/` (`README.md`, `IMPLEMENTATION.md`, `MEASUREMENTS.md`, `probe/` -- ten
+**Records:** `archive/work/apu-expert-pool/` (`README.md`, `IMPLEMENTATION.md`, `MEASUREMENTS.md`, `probe/` -- ten
 HIP programs, all verified to build on ROCm 10.1) and its `wip/CAMPAIGNS.md` row.
 
 ## 261109.008 (r243, RELEASE v16-a691b2345-r243) -- contributor PR #289: the qwen4exp host PLE gather writes the graph input in place and fans out over `--threads`, +1.3 % prefill on the `-ub 4096` arm (and neutral at `-ub 6144`)

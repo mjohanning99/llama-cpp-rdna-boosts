@@ -1,3 +1,14 @@
+# OBSOLETE — do not hand this to a session
+
+This prompt told the next session to run the >RAM arm of the **arena** design.  That design is closed:
+the arena is a duplicate medium on UMA and the tier was measured 3x slower than the CPU expert path
+(see [`CONCLUSION.md`](CONCLUSION.md)).  The live prompt is
+[`wip/uma-static-window/NEXT-SESSION-PROMPT.md`](../../../wip/uma-static-window/NEXT-SESSION-PROMPT.md).
+
+Kept only so the record shows what was attempted.
+
+---
+
 # NEXT-SESSION-PROMPT — `wip/apu-expert-pool`
 
 Hand this verbatim to a cold session.  It assumes no memory of the previous one.

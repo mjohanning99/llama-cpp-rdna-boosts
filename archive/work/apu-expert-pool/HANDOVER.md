@@ -1,3 +1,9 @@
+> **ARCHIVED 2026-11-10 — DO NOT RE-ENTER THIS PATH.**  This campaign is closed; its thesis (open the
+> shipped expert-arena tier on UMA by budgeting it from `MemAvailable`) was **disproved** by its own
+> measurements.  Read [`CONCLUSION.md`](CONCLUSION.md) first — it lists the numbers that killed it, what
+> was kept, and the rules that came out of it.  The live work is
+> [`wip/uma-static-window/`](../../../wip/uma-static-window/README.md).
+
 # HANDOVER — `wip/apu-expert-pool` (cold-session continuation)
 
 **Written 2026-11-09, end of the first development session.  Read this file top to bottom before touching anything.**

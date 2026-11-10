@@ -55,6 +55,7 @@ Set `HIP_LAUNCH_BLOCKING=1` when you want a fault to be attributed to the launch
 | `08-dma-fill.cpp` | `hipMemcpy` H2D into GTT vs host `memcpy` | `<gguf>` |
 | `09-register-pins.cpp` | control vs registered residency under `fadvise`+`madvise`; the hold survives `hipHostUnregister`; register cost; whole-file registration | `ctl\|reg\|cost <file> <bytes>`; the `reg` arm on a 46 GiB file holds 46 GiB for the process lifetime |
 | `10-coherence.cpp` | host overwrites a registered range in place and the GPU reads the new bytes, both registration modes | `ro` (default is the ReadOnly arm only if you pass `ro`) / `writable` |
+| `11-fill-path.cpp` | **the fill path for a single tier**: VMM arenas (`hipMemCreate` Pinned + reserve + map) are **not host-writable** (so the slab's arena can only ever be a copy destination); ordinary **anon** memory is directly fillable by `O_DIRECT` (4.6–6.5 GB/s, *no bounce buffer*) **including after the ReadOnly registration is in place**, and the GPU reads it at **198.7 GB/s** (the arena measures 194.3) — so on a UMA APU the registered anon tier IS the tier | `<hipmalloc\|vmm\|vmmhost\|anon\|copy> <file> [GiB]`; a host dereference of an inaccessible mapping is caught by `SIGSEGV`+`siglongjmp` **in-process**: `fork()` does not inherit a driver mapping and reports a false negative |
 
 ## What these do not cover
 
