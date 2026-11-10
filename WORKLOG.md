@@ -1,3 +1,25 @@
+## 261110.011 (wip) -- `uma-static-window`: P2 window mode committed on the fork, and a cold-session handover written
+
+**Nothing in `patches/`; no default changed.**  Two housekeeping commits so the next session starts from a real state
+rather than a working tree:
+
+* The fork's window implementation is committed (`~/llama.cpp` `wip/uma-static-window` tip **`437dd6491`**):
+  `MOE_HOST_POOL_ALLOC=window`, a fourth pool memory type whose slots are the model file's own pages (VA reserve +
+  `MAP_FIXED` per heat-selected expert + one `hipHostRegister(ReadOnly)`; `win_stride = host_bytes + page` absorbs the
+  file-offset residue; `cold_base` shifted by it; keep-all; prewarm/fill skipped).  Mechanism measured working
+  (18.6 GiB residency, `fills=0`, 87.8 % cold, 58.5 t/s, ~0 memory), **data still wrong** -- RESULTS §K.
+* [`wip/uma-static-window/NEXT-SESSION-PROMPT.md`](wip/uma-static-window/NEXT-SESSION-PROMPT.md) rewritten for a cold
+  session: the read order, the exact state (repos/branches/tips), what is established with the numbers of record, the
+  one open bug with the measurement that names it, the arms that decide the campaign, the unowned side-findings
+  (the cache-off prefill stall, the 10 %-of-MemAvailable pool clamp), the six harness traps, and the tool inventory.
+
+**The state it hands over:** transport is free (a registered window reads at 231.0 GB/s against hipMalloc's 232.1 and
+the band is set by launch shape); 100 % in-place = device parity (59.8-60.1 vs 62.7-62.9, CPU path 35.0); the split
+granularity is the table and it is a cliff; the prior supports 96 GiB -> 99.94 % hit; a zero-copy 24 GiB window builds
+in 0.45 s of registration and reads at 234 GB/s wide / 199 GB/s at 8 rows; the window mode runs with `fills=0`; and
+the two numbers to beat on the 122B are 8.0 t/s decode and 175.2 t/s prefill (4059 tokens, `-ub 4096`, of which 9.98 s
+is the fill memcpy).
+
 ## 261110.010 (wip) -- `uma-static-window` P2 step 2: the zero-copy WINDOW runs (18.6 GiB, fills=0, 58.5 t/s) but reads the wrong bytes -- open
 
 **Campaign branch only, opt-in (`MOE_HOST_POOL_ALLOC=window`), no default changed, nothing in `patches/`.**  P2 step
