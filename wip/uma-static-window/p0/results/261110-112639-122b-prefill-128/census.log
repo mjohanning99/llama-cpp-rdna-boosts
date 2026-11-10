@@ -1,0 +1,439 @@
+warning: --host-experts is deprecated; use --limit-host-experts [auto|N] (-lme) instead
+
+
+Loading model... |0.00.020.730 I cmn  common_param: common_params_print_info: build 12226 (70e0eda4a) with Clang 24.0.0 for Linux x86_64
+0.00.020.733 I cmn  common_param: common_params_print_info: verbosity = 4 (adjust with the `-lv N` CLI arg)
+0.00.020.734 I cmn  common_param: device_info:
+0.00.020.768 I cmn  common_param:   - ROCm0   : AMD Radeon 8060S Graphics (gfx1151) (124000 MiB, 122964 MiB free)
+0.00.020.774 I cmn  common_param:   - CPU     : AMD RYZEN AI MAX+ 395 w/ Radeon 8060S (126485 MiB, 126485 MiB free)
+0.00.020.872 I cmn  common_param: system_info: n_threads = 12 (n_threads_batch = 12) / 16 | ROCm : NO_VMM = 1 | FA_QUANTS = q4_0-q4_0,q4_1-q4_1,q5_0-q5_0,q5_1-q5_1,q8_0-q8_0,bf16-bf16,f16-f16,iq4_nl-iq4_nl | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX_VNNI = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.00.020.974 I srv  init_listene: running without SSL
+0.00.021.307 I srv          init: using 15 threads for HTTP server
+0.00.021.372 W srv  server_setup: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.022.989 I srv    load_model: loading model '/llm/models/Qwen3.5/122B-A10B/Q8_0/Qwen3.5-122B-A10B-Q8_0-00001-of-00004.gguf'
+0.00.022.991 I srv    load_model: local path '/llm/models/Qwen3.5/122B-A10B/Q8_0/Qwen3.5-122B-A10B-Q8_0-00001-of-00004.gguf'
+0.00.023.007 I cmn  common_fit_a: fitting params to device memory ...
+0.00.023.007 I cmn  common_fit_a: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
+0.00.023.030 I common_params_fit_impl: getting device memory data for initial parameters:
+-\0.00.308.537 I common_memory_breakdown_print: | memory breakdown [MiB]               |  total     free      self    model   context   compute    unaccounted |
+0.00.308.540 I common_memory_breakdown_print: |   - ROCm0 (8060S Graphics (gfx1151)) | 124000 = 122775 + (  5886 =   5568 +     161 +     157) +       -4662 |
+0.00.308.540 I common_memory_breakdown_print: |   - Host                             |                    118288 = 118276 +       0 +      12                |
+|0.00.329.009 W common_params_fit_impl: host-resident MoE experts on a shared host/device memory pool (integrated GPU): the expert cache is not used there, so no slab headroom or arena is reserved in the --fit margin.  Re-enabling it where the platform really partitions host/device memory needs MOE_EXPERT_CACHE_UNIFIED=1 plus an explicit MOE_EXPERT_CACHE_MIB and GGML_CUDA_SLAB_RESERVE_MIB.
+0.00.329.019 I common_params_fit_impl: projected to use 5886 MiB of device memory vs. 122775 MiB of free device memory
+0.00.329.019 I common_params_fit_impl: will leave 116889 >= 1024 MiB of free device memory, no changes needed
+0.00.329.021 I common_fit_params: successfully fit params to free device memory
+0.00.329.027 I common_fit_params: fitting params to free memory took 0.31 seconds
+0.00.357.768 I llama_model_loader: additional 3 GGUFs metadata loaded.
+0.00.357.771 I llama_model_loader: loaded meta data with 57 key-value pairs and 899 tensors from /llm/models/Qwen3.5/122B-A10B/Q8_0/Qwen3.5-122B-A10B-Q8_0-00001-of-00004.gguf (version GGUF V3 (latest))
+0.00.357.787 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+0.00.357.791 I llama_model_loader: - kv   0:                       general.architecture str              = qwen35moe
+0.00.357.791 I llama_model_loader: - kv   1:                               general.type str              = model
+0.00.357.792 I llama_model_loader: - kv   2:                     general.sampling.top_k i32              = 20
+0.00.357.794 I llama_model_loader: - kv   3:                     general.sampling.top_p f32              = 0.950000
+0.00.357.794 I llama_model_loader: - kv   4:                      general.sampling.temp f32              = 0.600000
+0.00.357.795 I llama_model_loader: - kv   5:                               general.name str              = Qwen3.5-122B-A10B
+0.00.357.795 I llama_model_loader: - kv   6:                           general.basename str              = Qwen3.5-122B-A10B
+0.00.357.795 I llama_model_loader: - kv   7:                       general.quantized_by str              = Unsloth
+0.00.357.796 I llama_model_loader: - kv   8:                         general.size_label str              = 122B-A10B
+0.00.357.796 I llama_model_loader: - kv   9:                            general.license str              = apache-2.0
+0.00.357.797 I llama_model_loader: - kv  10:                       general.license.link str              = https://huggingface.co/Qwen/Qwen3.5-1...
+0.00.357.797 I llama_model_loader: - kv  11:                           general.repo_url str              = https://huggingface.co/unsloth
+0.00.357.798 I llama_model_loader: - kv  12:                   general.base_model.count u32              = 1
+0.00.357.798 I llama_model_loader: - kv  13:                  general.base_model.0.name str              = Qwen3.5 122B A10B
+0.00.357.798 I llama_model_loader: - kv  14:          general.base_model.0.organization str              = Qwen
+0.00.357.798 I llama_model_loader: - kv  15:              general.base_model.0.repo_url str              = https://huggingface.co/Qwen/Qwen3.5-1...
+0.00.357.800 I llama_model_loader: - kv  16:                               general.tags arr[str,2]       = ["unsloth", "image-text-to-text"]
+0.00.357.800 I llama_model_loader: - kv  17:                      qwen35moe.block_count u32              = 49
+0.00.357.800 I llama_model_loader: - kv  18:                   qwen35moe.context_length u32              = 262144
+0.00.357.801 I llama_model_loader: - kv  19:                 qwen35moe.embedding_length u32              = 3072
+0.00.357.801 I llama_model_loader: - kv  20:             qwen35moe.attention.head_count u32              = 32
+0.00.357.801 I llama_model_loader: - kv  21:          qwen35moe.attention.head_count_kv u32              = 2
+0.00.357.802 I llama_model_loader: - kv  22:          qwen35moe.rope.dimension_sections arr[i32,4]       = [11, 11, 10, 0]
+0.00.357.803 I llama_model_loader: - kv  23:                   qwen35moe.rope.freq_base f32              = 10000000.000000
+0.00.357.804 I llama_model_loader: - kv  24: qwen35moe.attention.layer_norm_rms_epsilon f32              = 0.000001
+0.00.357.804 I llama_model_loader: - kv  25:                     qwen35moe.expert_count u32              = 256
+0.00.357.804 I llama_model_loader: - kv  26:                qwen35moe.expert_used_count u32              = 8
+0.00.357.804 I llama_model_loader: - kv  27:             qwen35moe.attention.key_length u32              = 256
+0.00.357.804 I llama_model_loader: - kv  28:           qwen35moe.attention.value_length u32              = 256
+0.00.357.805 I llama_model_loader: - kv  29:       qwen35moe.expert_feed_forward_length u32              = 1024
+0.00.357.805 I llama_model_loader: - kv  30: qwen35moe.expert_shared_feed_forward_length u32              = 1024
+0.00.357.805 I llama_model_loader: - kv  31:                  qwen35moe.ssm.conv_kernel u32              = 4
+0.00.357.805 I llama_model_loader: - kv  32:                   qwen35moe.ssm.state_size u32              = 128
+0.00.357.805 I llama_model_loader: - kv  33:                  qwen35moe.ssm.group_count u32              = 16
+0.00.357.805 I llama_model_loader: - kv  34:               qwen35moe.ssm.time_step_rank u32              = 64
+0.00.357.806 I llama_model_loader: - kv  35:                   qwen35moe.ssm.inner_size u32              = 8192
+0.00.357.806 I llama_model_loader: - kv  36:          qwen35moe.full_attention_interval u32              = 4
+0.00.357.806 I llama_model_loader: - kv  37:             qwen35moe.rope.dimension_count u32              = 64
+0.00.357.806 I llama_model_loader: - kv  38:             qwen35moe.nextn_predict_layers u32              = 1
+0.00.357.807 I llama_model_loader: - kv  39:                       tokenizer.ggml.model str              = gpt2
+0.00.357.807 I llama_model_loader: - kv  40:                         tokenizer.ggml.pre str              = qwen35
+0.00.357.808 I llama_model_loader: - kv  41:                      tokenizer.ggml.tokens arr[str,248320]  = ["!", "\"", "#", "$", "%", "&", "'", ...
+0.00.357.809 I llama_model_loader: - kv  42:                  tokenizer.ggml.token_type arr[i32,248320]  = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...
+0.00.357.810 I llama_model_loader: - kv  43:                      tokenizer.ggml.merges arr[str,247587]  = ["Ġ Ġ", "ĠĠ ĠĠ", "i n", "Ġ t",...
+0.00.357.810 I llama_model_loader: - kv  44:                tokenizer.ggml.eos_token_id u32              = 248046
+0.00.357.810 I llama_model_loader: - kv  45:            tokenizer.ggml.padding_token_id u32              = 248055
+0.00.357.810 I llama_model_loader: - kv  46:               tokenizer.ggml.add_bos_token bool             = false
+0.00.357.811 I llama_model_loader: - kv  47:                    tokenizer.chat_template str              = {%- set image_count = namespace(value...
+0.00.357.812 I llama_model_loader: - kv  48:               general.quantization_version u32              = 2
+0.00.357.812 I llama_model_loader: - kv  49:                          general.file_type u32              = 7
+0.00.357.812 I llama_model_loader: - kv  50:                      quantize.imatrix.file str              = Qwen3.5-122B-A10B-GGUF/imatrix_unslot...
+0.00.357.813 I llama_model_loader: - kv  51:                   quantize.imatrix.dataset str              = unsloth_calibration_Qwen3.5-122B-A10B...
+0.00.357.813 I llama_model_loader: - kv  52:             quantize.imatrix.entries_count u32              = 612
+0.00.357.813 I llama_model_loader: - kv  53:              quantize.imatrix.chunks_count u32              = 77
+0.00.357.813 I llama_model_loader: - kv  54:                                   split.no u16              = 0
+0.00.357.814 I llama_model_loader: - kv  55:                        split.tensors.count i32              = 899
+0.00.357.814 I llama_model_loader: - kv  56:                                split.count u16              = 4
+0.00.357.814 I llama_model_loader: - type  f32:  368 tensors
+0.00.357.815 I llama_model_loader: - type q8_0:  529 tensors
+0.00.357.815 I llama_model_loader: - type bf16:    2 tensors
+0.00.357.818 I print_info: file format = GGUF V3 (latest)
+0.00.357.818 I print_info: file type   = Q8_0
+0.00.357.819 I print_info: file size   = 123.44 GiB (8.51 BPW) 
+0.00.357.835 I llama_prepare_model_devices: using device ROCm0 (AMD Radeon 8060S Graphics (gfx1151)) (0000:c4:00.0) - 122784 MiB free
+0.00.405.536 I load: 0 unused tokens
+/0.00.422.202 I load: printing all EOG tokens:
+0.00.422.204 I load:   - 248044 ('<|endoftext|>')
+0.00.422.205 I load:   - 248046 ('<|im_end|>')
+0.00.422.205 I load:   - 248063 ('<|fim_pad|>')
+0.00.422.205 I load:   - 248064 ('<|repo_name|>')
+0.00.422.206 I load:   - 248065 ('<|file_sep|>')
+0.00.422.354 I load: special tokens cache size = 33
+0.00.440.093 I load: token to piece cache size = 1.7581 MB
+0.00.440.107 I print_info: arch                  = qwen35moe
+0.00.440.108 I print_info: vocab_only            = 0
+0.00.440.108 I print_info: no_alloc              = 0
+0.00.440.108 I print_info: n_ctx_train           = 262144
+0.00.440.109 I print_info: n_embd_inp            = 3072
+0.00.440.109 I print_info: n_embd                = 3072
+0.00.440.110 I print_info: n_embd_out            = 3072
+0.00.440.111 I print_info: n_layer               = 48
+0.00.440.111 I print_info: n_layer_all           = 49
+0.00.440.123 I print_info: n_head                = 32
+0.00.440.124 I print_info: n_head_kv             = 2
+0.00.440.125 I print_info: n_rot                 = 64
+0.00.440.125 I print_info: n_swa                 = 0
+0.00.440.126 I print_info: is_swa_any            = 0
+0.00.440.126 I print_info: non_causal_type       = 0
+0.00.440.127 I print_info: n_embd_head_k         = 256
+0.00.440.127 I print_info: n_embd_head_v         = 256
+0.00.440.128 I print_info: n_gqa                 = 16
+0.00.440.129 I print_info: n_embd_k_gqa          = 512
+0.00.440.129 I print_info: n_embd_v_gqa          = 512
+0.00.440.130 I print_info: f_norm_eps            = 0.0e+00
+0.00.440.132 I print_info: f_norm_rms_eps        = 1.0e-06
+0.00.440.132 I print_info: f_clamp_kqv           = 0.0e+00
+0.00.440.132 I print_info: f_max_alibi_bias      = 0.0e+00
+0.00.440.132 I print_info: f_logit_scale         = 0.0e+00
+0.00.440.133 I print_info: f_attn_scale          = 0.0e+00
+0.00.440.133 I print_info: f_attn_value_scale    = 0.0000
+0.00.440.134 I print_info: n_ff                  = 0
+0.00.440.134 I print_info: n_expert              = 256
+0.00.440.135 I print_info: n_expert_used         = 8
+0.00.440.135 I print_info: n_expert_groups       = 0
+0.00.440.135 I print_info: n_group_used          = 0
+0.00.440.136 I print_info: causal attn           = 1
+0.00.440.136 I print_info: pooling type          = -1
+0.00.440.136 I print_info: rope type             = 40
+0.00.440.136 I print_info: rope scaling          = linear
+0.00.440.137 I print_info: freq_base_train       = 10000000.0
+0.00.440.138 I print_info: freq_scale_train      = 1
+0.00.440.138 I print_info: n_ctx_orig_yarn       = 262144
+0.00.440.138 I print_info: rope_yarn_log_mul     = 0.0000
+0.00.440.139 I print_info: rope_finetuned        = unknown
+0.00.440.139 I print_info: mrope sections        = [11, 11, 10, 0]
+0.00.440.140 I print_info: ssm_d_conv            = 4
+0.00.440.140 I print_info: ssm_d_inner           = 8192
+0.00.440.140 I print_info: ssm_d_state           = 128
+0.00.440.141 I print_info: ssm_dt_rank           = 64
+0.00.440.141 I print_info: ssm_n_group           = 16
+0.00.440.141 I print_info: ssm_dt_b_c_rms        = 0
+0.00.440.142 I print_info: model type            = 122B.A10B
+0.00.440.143 I print_info: model params          = 124.64 B
+0.00.440.143 I print_info: general.name          = Qwen3.5-122B-A10B
+0.00.440.144 I print_info: vocab type            = BPE
+0.00.440.145 I print_info: n_vocab               = 248320
+0.00.440.145 I print_info: n_merges              = 247587
+0.00.440.145 I print_info: BOS token             = 11 ','
+0.00.440.146 I print_info: EOS token             = 248046 '<|im_end|>'
+0.00.440.146 I print_info: EOT token             = 248046 '<|im_end|>'
+0.00.440.147 I print_info: PAD token             = 248055 '<|vision_pad|>'
+0.00.440.147 I print_info: LF token              = 198 'Ċ'
+0.00.440.147 I print_info: FIM PRE token         = 248060 '<|fim_prefix|>'
+0.00.440.148 I print_info: FIM SUF token         = 248062 '<|fim_suffix|>'
+0.00.440.148 I print_info: FIM MID token         = 248061 '<|fim_middle|>'
+0.00.440.148 I print_info: FIM PAD token         = 248063 '<|fim_pad|>'
+0.00.440.148 I print_info: FIM REP token         = 248064 '<|repo_name|>'
+0.00.440.149 I print_info: FIM SEP token         = 248065 '<|file_sep|>'
+0.00.440.149 I print_info: EOG token             = 248044 '<|endoftext|>'
+0.00.440.149 I print_info: EOG token             = 248046 '<|im_end|>'
+0.00.440.150 I print_info: EOG token             = 248063 '<|fim_pad|>'
+0.00.440.150 I print_info: EOG token             = 248064 '<|repo_name|>'
+0.00.440.150 I print_info: EOG token             = 248065 '<|file_sep|>'
+0.00.440.150 I print_info: max token length      = 256
+0.00.440.151 I load_tensors: loading model tensors, this can take a while... (load_mode = mmap)
+0.00.440.205 I set_host_experts_umem: this device's memory is a SHARED host/device pool (an integrated GPU); a `pool` host-expert placement is allowed: the masters stay in the read-only model mapping and every GPU read is served through the bounded pinned pool (MOE_HOST_EXPERTS_UMA=0 restores the refusal)
+0.00.440.444 I moe_cache_set_host_pool: host pool enabled: the loader's explicit budget (-lme N)
+0.00.440.450 I plan_host_expert_placement: host experts: auto -> a pinned per-EXPERT pool of 95891.4 MiB of 117504.0 MiB: the arena's complement, plus mirrored residents while capacity lasts
+0.00.441.784 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --load-mode none for better performance
+0.00.505.366 W model has unused tensor blk.48.attn_norm.weight (size = 12288 bytes) -- ignoring
+0.00.505.368 W model has unused tensor blk.48.post_attention_norm.weight (size = 12288 bytes) -- ignoring
+0.00.505.373 W model has unused tensor blk.48.attn_q.weight (size = 53477376 bytes) -- ignoring
+0.00.505.374 W model has unused tensor blk.48.attn_k.weight (size = 1671168 bytes) -- ignoring
+0.00.505.376 W model has unused tensor blk.48.attn_v.weight (size = 1671168 bytes) -- ignoring
+0.00.505.381 W model has unused tensor blk.48.attn_output.weight (size = 26738688 bytes) -- ignoring
+0.00.505.383 W model has unused tensor blk.48.attn_q_norm.weight (size = 1024 bytes) -- ignoring
+0.00.505.384 W model has unused tensor blk.48.attn_k_norm.weight (size = 1024 bytes) -- ignoring
+0.00.505.386 W model has unused tensor blk.48.ffn_gate_inp.weight (size = 1572864 bytes) -- ignoring
+0.00.505.387 W model has unused tensor blk.48.ffn_down_exps.weight (size = 855638016 bytes) -- ignoring
+0.00.505.390 W model has unused tensor blk.48.ffn_gate_exps.weight (size = 855638016 bytes) -- ignoring
+0.00.505.392 W model has unused tensor blk.48.ffn_up_exps.weight (size = 855638016 bytes) -- ignoring
+0.00.505.394 W model has unused tensor blk.48.ffn_gate_inp_shexp.weight (size = 6144 bytes) -- ignoring
+0.00.505.395 W model has unused tensor blk.48.ffn_gate_shexp.weight (size = 3342336 bytes) -- ignoring
+0.00.505.397 W model has unused tensor blk.48.ffn_up_shexp.weight (size = 3342336 bytes) -- ignoring
+0.00.505.398 W model has unused tensor blk.48.ffn_down_shexp.weight (size = 3342336 bytes) -- ignoring
+0.00.505.401 W model has unused tensor blk.48.nextn.eh_proj.weight (size = 20054016 bytes) -- ignoring
+0.00.505.404 W model has unused tensor blk.48.nextn.enorm.weight (size = 12288 bytes) -- ignoring
+0.00.505.406 W model has unused tensor blk.48.nextn.hnorm.weight (size = 12288 bytes) -- ignoring
+0.00.505.411 W model has unused tensor blk.48.nextn.shared_head_norm.weight (size = 12288 bytes) -- ignoring
+-0.00.575.553 I load_tensors: offloading output layer to GPU
+0.00.575.558 I load_tensors: offloading 48 repeating layers to GPU
+0.00.575.559 I load_tensors: offloaded 50/50 layers to GPU
+0.00.575.566 I load_tensors:   CPU_Mapped model buffer size =   772.97 MiB
+0.00.575.566 I load_tensors:        ROCm0 model buffer size =  5568.07 MiB
+0.00.575.567 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.567 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.568 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.568 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.568 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.569 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.569 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.569 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.569 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.570 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.570 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.570 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.570 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.570 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.570 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.571 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.571 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.571 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.571 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.571 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.571 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.572 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.572 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.572 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.572 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.572 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.572 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.573 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.573 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.573 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.573 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.573 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.574 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.574 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.574 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.574 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.574 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.575 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.575 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.575 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.575 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.575 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.576 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.576 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.576 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.576 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.576 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.576 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.577 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.577 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.577 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.577 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.577 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.578 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.578 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.578 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.578 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.578 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.579 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.579 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.579 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.579 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.579 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.579 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.580 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.580 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.580 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.580 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.580 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.581 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.581 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.581 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.581 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.581 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.583 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.583 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.583 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.584 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.584 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.584 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.584 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.584 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.584 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.585 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.585 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.585 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.585 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.585 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.585 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.586 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.586 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.586 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.586 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.586 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.587 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.587 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.587 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.587 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.587 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.587 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.588 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.588 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.588 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.588 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.588 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.589 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.589 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.589 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.589 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.589 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.590 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.590 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.590 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.590 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.590 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.590 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.591 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.591 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.591 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.591 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.591 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.591 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.592 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.592 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.592 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.592 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.592 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.593 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.593 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.593 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.593 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.593 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.593 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.594 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.594 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.594 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.594 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.594 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.595 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.595 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.595 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.595 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.595 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+0.00.575.596 I load_tensors: ROCm_HostMap model buffer size =   816.00 MiB
+\|/-\|/-\|/-\|/-0.02.131.175 W report_host_expert_placement: host experts: pinned 0.0 MiB of 117504.0 MiB (cap 95891.4 MiB), pageable 117504.0 MiB, 144/144 pool sources registered; auto -> a pinned per-EXPERT pool of 95891.4 MiB of 117504.0 MiB: the arena's complement, plus mirrored residents while capacity lasts
+0.02.133.836 I cmn  common_init_: added <|endoftext|> logit bias = -inf
+0.02.133.838 I cmn  common_init_: added <|im_end|> logit bias = -inf
+0.02.133.839 I cmn  common_init_: added <|fim_pad|> logit bias = -inf
+0.02.133.839 I cmn  common_init_: added <|repo_name|> logit bias = -inf
+0.02.133.840 I cmn  common_init_: added <|file_sep|> logit bias = -inf
+0.02.133.906 I llama_context: constructing llama_context
+0.02.133.918 I llama_context: n_seq_max             = 1
+0.02.133.918 I llama_context: n_ctx                 = 512
+0.02.133.918 I llama_context: n_ctx_seq             = 512
+0.02.133.918 I llama_context: n_batch               = 512
+0.02.133.918 I llama_context: n_ubatch              = 512
+0.02.133.919 I llama_context: causal_attn           = 1
+0.02.133.920 I llama_context: flash_attn            = auto
+0.02.133.920 I llama_context: kv_unified            = false
+0.02.133.922 I llama_context: freq_base             = 10000000.0
+0.02.133.922 I llama_context: freq_scale            = 1
+0.02.133.923 I llama_context: n_rs_seq              = 0
+0.02.133.923 I llama_context: n_rs_batch            = 1
+0.02.133.923 I llama_context: n_outputs_max         = 1
+0.02.133.923 I llama_context: n_outputs_max_per_seq = 1
+0.02.133.924 I llama_context: n_ctx_seq (512) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+0.02.134.200 I llama_context:  ROCm_Host  output buffer size =     0.95 MiB
+0.02.134.584 I llama_kv_cache:      ROCm0 KV buffer size =    12.00 MiB
+0.02.134.587 I llama_kv_cache: size =   12.00 MiB (   512 cells,  12 layers,  1/1 seqs), K (f16):    6.00 MiB, V (f16):    6.00 MiB
+0.02.134.588 I llama_kv_cache: n_rot_k = 0, n_embd_head_k_all = 256
+0.02.134.588 I llama_kv_cache: n_rot_v = 0, n_embd_head_k_all = 256
+0.02.137.153 I llama_memory_recurrent:      ROCm0 RS buffer size =   149.06 MiB
+0.02.137.158 I llama_memory_recurrent: size =  149.06 MiB (     1 cells,  48 layers,  1 seqs  0 rs_seq), R (f32):    5.06 MiB, S (f32):  144.00 MiB, P (f32):    0.00 MiB
+0.02.137.165 I sched_reserve: reserving ...
+0.02.140.175 I resolve_fused_ops: Flash Attention enabled
+0.02.140.177 I resolve_fused_ops: resolving derived kq mask support:
+0.02.141.029 I resolve_fused_ops: derived kq mask flash attention enabled
+0.02.141.030 I resolve_fused_ops: resolving fused DeepSeek V4 HC support:
+0.02.141.737 I resolve_fused_ops: fused DeepSeek V4 HC pre enabled
+0.02.142.429 I resolve_fused_ops: fused DeepSeek V4 HC comb enabled
+0.02.169.914 I sched_reserve:      ROCm0 compute buffer size =   983.42 MiB
+0.02.169.919 I sched_reserve:  ROCm_Host compute buffer size =    24.03 MiB
+0.02.169.921 I sched_reserve: graph (pp bs=512, tg bs=1): nodes = 4581 / 4581, splits = 145 / 98, input objects = 5 / 4, input tensors = 9 / 10
+0.02.169.923 I sched_reserve: reserve took 32.76 ms, sched copies = 1
+0.02.169.978 I cmn          init: llama threadpool init, n_threads = 12
+0.02.170.006 I cmn  common_init_: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+0.02.173.552 I sched_graph_realloc: graph reallocation: nodes = 4933 (changed = 0), splits = 98, n_same = 1, n_diff = 0
+0.02.180.144 I ggml_cuda_async_input_arm_locked: device ring: batched graph-input uploads on (GGML_CUDA_ASYNC_INPUT_BATCH=0 disables)
+0.02.180.151 I ggml_cuda_async_input_set: device 0: async graph-input uploads on (GGML_CUDA_ASYNC_INPUT=1 enables)
+\|0.02.384.665 I ggml_backend_cpu_graph_n_threads: offloaded MoE (host-resident expert weights): using 8 of 12 threads (default cap 8; GGML_CPU_MOE_OFFLOAD_THREADS overrides, -t/--cpu-mask are the usual levers)
+/-\|/-\|/-\0.03.456.702 I cmn  common_conte: the context does not support partial sequence removal
+0.03.461.315 I srv    load_model: speculative decoding will use checkpoints
+0.03.461.318 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 512, kv_unified = 'false'
+0.03.461.336 I spec common_specu: no implementations specified for speculative decoding
+0.03.461.341 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 512
+0.03.461.365 I srv    load_model: prompt cache is enabled, size limit: 8192 MiB
+0.03.461.366 I srv    load_model: use `--cache-ram 0` to disable the prompt cache
+0.03.461.367 I srv    load_model: for more info see https://github.com/ggml-org/llama.cpp/pull/16391
+0.03.461.367 I srv    load_model: context checkpoints enabled, max = 32, min spacing = 8192
+0.03.461.386 I srv          init: idle slots will be saved to prompt cache upon starting a new task
+0.03.468.319 I srv          init: init: chat template, example_format: '<|im_start|>system
+You are a helpful assistant<|im_end|>
+<|im_start|>user
+Hello<|im_end|>
+<|im_start|>assistant
+Hi there<|im_end|>
+<|im_start|>user
+How are you?<|im_end|>
+<|im_start|>assistant
+<think>
+'
+0.03.468.630 I srv          init: init: chat template, thinking = 1
+0.03.468.652 I srv          init: preserve_reasoning kwarg: not supported by template
+0.03.468.691 I srv  server_run_i: model loaded
+0.03.468.694 I srv  server_on_li: listening on http://127.0.0.1:46593
+0.03.468.773 I srv  update_slots: all slots are idle
+|/ 0.03.636.200 I srv  server_strea: conv_id= (empty=1)
+0.03.637.044 I slot get_availabl: id  0 | task -1 |  - skipping, slot is empty
+0.03.637.055 I slot get_availabl: id  0 | task -1 | selected slot by LRU, n_tokens = 0, t_last = -1
+0.03.637.055 I srv  get_availabl: updating prompt cache
+0.03.637.197 I srv          find:  - looking for better prompt, base f_keep = -1.000, f_sim = 0.000
+0.03.637.201 I srv          find:  - looking for better prompt, base f_keep = -1.000, f_sim = 0.000
+0.03.637.320 I srv        update:  - cache state: 0 prompts, 0.000 MiB (limits: 8192.000 MiB, 512 tokens, 8589934592 est)
+0.03.637.323 I srv  get_availabl: prompt cache update took 0.27 ms
+0.03.637.361 I slot launch_slot_: id  0 | task -1 | sampler chain: logits -> ?penalties -> ?dry -> ?top-n-sigma -> top-k -> ?typical -> top-p -> min-p -> ?xtc -> temp-ext -> greedy 
+0.03.637.368 I slot launch_slot_: id  0 | task -1 | sampler params: 
+	repeat_last_n = 64, repeat_penalty = 1.000, frequency_penalty = 0.000, presence_penalty = 0.000
+	dry_multiplier = 0.000, dry_base = 1.750, dry_allowed_length = 2, dry_penalty_last_n = 64
+	top_k = 20, top_p = 0.950, min_p = 0.050, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.000
+	mirostat = 0, mirostat_lr = 0.100, mirostat_ent = 5.000, adaptive_target = -1.000, adaptive_decay = 0.900
+0.03.637.369 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.03.637.382 I slot   operator(): id  0 | task 0 | new prompt, n_ctx_slot = 512, n_keep = 0, task.n_tokens = 201
+0.03.637.395 I slot   operator(): id  0 | task 0 | cached n_tokens = 0, memory_seq_rm [0, end)
+0.03.695.671 I ggml_cuda_op_gated_delta_net_impl: chunked GDN prefill n=197 K=1 n_seqs=1 (chunked 181 + sequential tail 16, snapshots written; GGML_CUDA_GDN_TAIL=0 restores whole-batch chunking)
+0.03.852.299 I ggml_backend_cuda_stage_h2d_gbps: H2D bandwidth calibration: 80.5 GB/s (512 MiB x3 in 20.01 ms, from cudaMalloc)
+0.03.871.878 I sched_stage_min_tokens: H2D staging calibration: 80.5 GB/s -> min_tokens=64
+8.36.510.932 W srv          stop: cancel task, id_task = 0

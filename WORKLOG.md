@@ -1,3 +1,36 @@
+## 261110.008 (wip) -- `uma-static-window` P2 step 1: the ZERO-COPY window works (24 GiB, no copy, 234 GB/s) -- and the 122B prefill does not stall for the reason anyone thought
+
+**Nothing in `patches/`.**  P2's technical risk was one question: can a read-only, expert-indexed, GPU-readable
+window be built out of the **model's own pages**, without the copy that made a 96 GiB window swap the box?  Answer:
+yes, measured.  And the prefill baseline turned up a defect instead of a bandwidth story.  Record:
+[`p0/RESULTS.md`](wip/uma-static-window/p0/RESULTS.md) §I; probe `p0/winprobe.cpp`.
+
+**I.1 `winprobe`** reserves VA, `MAP_FIXED`s each heat-selected expert's **file range** into its slot (pages = the
+page cache's, shared with the CPU path, compacted into any slot order), then `hipHostRegister(Mapped|Portable|
+ReadOnly)` over the window.  7 700 slots x 3 342 336 B = 23.97 GiB of the real 122B shard, slots ordered by the
+persisted prior:
+
+* fault-in **4.99 s at 4.9 GiB/s** (the only time those bytes cross the wire) -- 96 GiB would be ~20 s;
+* register **0.45 s for 24 GiB at 54 GB/s** -- 96 GiB ~1.8 s;
+* **MemAvailable moved 127 MiB for a 24 GiB window** -- zero copy, confirmed (a copy would have cost 24 GiB);
+* read **234.2 GB/s** at 32 rows/launch and **199.0 GB/s at the 8-row per-layer shape**, both with a 1024-thread
+  block -- at or above `hipMalloc` (232/177).
+
+Scaled to the 122B at 96 GiB / 99.94 % hit: **~26 t/s at 99 GB/s, ~48 t/s at 199 GB/s**, against stock's 8.0.
+
+**I.2 Prefill.**  122B `-ncmoe 48 --host-experts pool -lm mmap`: cache **off** and a 394-token prompt -> **never
+completes** (12 min, stuck in `poll`, 109 GB RSS, 3 GiB free, killed); 201 tokens -> never completes either (log
+stops right after `sched_stage_min_tokens ... min_tokens=64`).  Cache **armed** (16 GiB, small arena, 10 % pool),
+same 201-token prompt -> **completes at 10.1 t/s in 19.9 s**, with **191 MiB of expert H2D traffic**, not 114.8 GiB.
+
+So the prefill is neither staging the whole set per ubatch nor bandwidth-bound in the cache-on arm (~6 GB/s of CPU
+reads).  Caveat recorded: the two arms also differed in page-cache state (cache-off ran cold, cache-on inherited a
+warm 105 GiB), so the clean cache-off/warm-cache arm at 201 tokens is the next measurement before the hang is
+attributed to the staging path rather than to a cold cache.
+
+**Consequence:** the window's prefill value is *where the 75 % is read from* (in place at 199-234 GB/s instead of
+by the CPU at ~6 GB/s), not a 4x reduction in staged bytes -- the delivered prefill does not stage 100 % today.
+
 ## 261110.007 (wip) -- `uma-static-window`: the 96 GiB arithmetic is RIGHT (99.94 % hit rate), and it amends the design -- the window must be the model's own pages, not a copy
 
 **Nothing in `patches/`.**  The maintainer argued that a heat-managed ~96 GiB window must give a ~98 % hit rate, so

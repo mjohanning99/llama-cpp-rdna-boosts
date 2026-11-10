@@ -456,3 +456,56 @@ expert-major tensor, and a *pageable* fallback remains for the complement.
 **What is now genuinely unmeasured and worth building (P2):** per-expert RO registration of the mapping + the
 existing heat prior + the existing per-expert cold-read path, then the 122B arm at 96/88/80 GiB.  Predicted 26-55
 t/s against stock's 8.0.  The launch-shape lever (§A.2) is worth +80 % of band on its own at 8 rows.
+
+---
+
+# I. P2 step 1 — the zero-copy window WORKS (probe), and the prefill question is not a bandwidth story
+
+## I.1 `p0/winprobe.cpp` — a 24 GiB window built out of the model's own pages
+
+Builds what the amended design needs: reserve VA, `MAP_FIXED` each selected expert's **file range** into its
+slot (so the pages are the page cache's, shared with the CPU path, compacted into whatever slot order we choose),
+then `hipHostRegister(Mapped|Portable|ReadOnly)` over the whole thing.  Slots ordered by the persisted `MHT2`
+prior, stride 3 342 336 B (the 122B's Q8_0 expert), 7 700 slots = 23.97 GiB from shard 2:
+
+```
+window: 7700/7700 slots mapped, 23.97 GiB, stride 3342336, heat-ranked
+  fault-in     4.99 s (4913.8 MiB/s)
+  register     0.45 s (54201.8 MiB/s)   [Mapped|Portable|ReadOnly]
+  MemAvailable 119726 -> 119724 -> 119599 MiB   (a COPY of 23.97 GiB would have cost that much)
+  read wide     32 rows/launch, 1024 thr:   0.457 ms ->  234.2 GB/s
+  read layer    32 rows/launch, 1024 thr:   0.538 ms ->  199.0 GB/s
+```
+
+**Everything the design needs, measured:** the window is the model's own pages (no copy: MemAvailable moved
+127 MiB for 24 GiB of window); building it costs 4.99 s of fault-in at 4.9 GB/s (that read is the only time those
+bytes cross the wire) plus **0.45 s to register 24 GiB at 54 GB/s** (so 96 GiB ≈ 20 s + 1.8 s); and it reads at
+**234.2 GB/s wide / 199.0 GB/s at the 8-row per-layer shape with a 1024-thread block** — at or above `hipMalloc`.
+Scaled to the 122B: **96 GiB at 99.94 % hit → ~26 t/s at 99 GB/s and ~48 t/s at 199 GB/s against stock's 8.0.**
+
+## I.2 The prefill: cache-off stalls outright, cache-on runs at 10.1 t/s
+
+Measuring the prefill baseline for the maintainer's second question turned up something bigger than "3 t/s":
+
+| arm (122B, `-ncmoe 48 --host-experts pool -lm mmap`) | prompt | result |
+|---|---|---|
+| cache **off** (`MOE_EXPERT_CACHE_MIB=0`) | 394 tok | **never completed** — 12 min, stuck in `poll`, 109 GB RSS, box at 3 GiB free, killed |
+| cache **off** | 201 tok | **never completed** — 8.6 min to the `timeout`, log stops right after `sched_stage_min_tokens … min_tokens=64` |
+| cache **armed** (16 GiB budget, small arena, 10 % pool) | 201 tok | **completes: 10.1 t/s** (19.9 s), expert H2D traffic **191 MiB** total |
+
+So the prefill is **not** staging the whole host expert set per ubatch (191 MiB, not 114.8 GiB), and it is **not**
+bandwidth-bound in the cache-on arm — it is ~6 GB/s of CPU-side reads and ~10 t/s.  In the cache-off arm it does
+not finish at all, and the last thing logged is the H2D staging calibration, i.e. it dies in the staging path that
+`min_tokens=64` switches on (a 15-token prompt on the same configuration completes at 1.2-17 t/s).
+
+**Confound to resolve before drawing a conclusion:** the two arms also differed in page-cache state (the cache-off
+runs started cold, after the window probe had evicted; the cache-on run inherited a warm 105 GiB cache).  The clean
+test is cache-off with a *warm* cache at 201 tokens.  Until that is run, the honest statement is: **a host-expert
+prefill whose ubatch reaches the staging path can stall on this box, and when it does not stall it runs at ~10 t/s
+for a 201-token prompt with only 191 MiB of expert staging.**
+
+**Consequence for the design:** the prefill saving from a 75 %-resident window is real but it is *not* the 4x
+staging reduction that the "25 % of the weights per ubatch pass" model predicts — because the delivered prefill
+does not stage 100 % today.  What the window changes is *where the 75 % is read from*: in place at 199-234 GB/s
+instead of by the CPU at ~6 GB/s.  That is the lever to measure, and it needs the clean cache-off/warm-cache arm
+first.
