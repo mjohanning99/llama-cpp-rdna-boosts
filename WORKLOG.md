@@ -1,3 +1,42 @@
+## 261110.002 (wip) -- `uma-static-window` P0: the in-place read is FREE (+71 % over the CPU path), the split granularity is the TABLE, and P0.2's arithmetic was the wrong row
+
+**Nothing in `patches/`; `release.json` untouched; no default changed.**  P0 is the campaign's decision step
+([`wip/uma-static-window/README.md`](wip/uma-static-window/README.md) §4); the arms, censuses and the corrected
+arithmetic are in [`wip/uma-static-window/p0/RESULTS.md`](wip/uma-static-window/p0/RESULTS.md).  Box `halo`
+(gfx1151, 123 GiB, ROCm 10.1.0), `build-wip` from the r243 tree + the five `apu-expert-pool` enablement/fix commits
+(`70e0eda4a`, the retired experiment excluded), Qwen3.6-35B-A3B Q4_K_M (18 662 MiB of expert bytes, 120 host
+tables), `-c 4096 -n 96 -t 12`, `HIP_VISIBLE_DEVICES=0`.
+
+**P0.1 -- PASS, and stronger than asked.**  All 120 tables registered with **one arena slot each** (72.9 MiB) and an
+admission that never admits, against a covering mirror pool registered **read-only**:
+`cold=99.48 %` (93 061 of 93 544 reaches) and **59.8 / 60.1 t/s**, against **62.7 / 62.9** with every expert on the
+device and **35.0 / 35.1** for the CPU expert path -- **+71 % over the CPU path, -4.5 % against device memory**.
+The GPU reading host-resident experts in place, with no copy and no eviction, costs nothing on a shared pool; the
+2-3x was never going to come from the transport.  Read-only vs writable registration is a **tie** here (60.1 vs
+59.9) because batch-1 decode on this model is latency-bound at ~46 GB/s of effective expert traffic -- the 35B
+**cannot** resolve a read-band question, and the probe's 198-233 GB/s is a sequential 1 GiB sum.
+
+**P0.2 -- the mix is free inside the GPU, and the split is a cliff at the table.**  A per-expert window plus a cold
+complement inside one routed op is smooth and free (5/25/50/75 % window: **53.3 / 55.6 / 58.3 / 59.3 t/s**, hit
+0.32 -> 0.99).  But "some experts on the GPU, the rest computed on the CPU" is not one ggml op, and the delivered
+granularity is the **table**: 96 of 120 tables GPU-served measures **35.5**, 81 of 120 measures **34.5**, and the
+pure CPU path measures **35.0** -- losing 20 % of the tables costs the *entire* win, and 32 % costs no more, so it
+is a fixed per-token cost of a CPU-side MoE chain, **not** a proportional one.  Nothing overlapped: the design's
+`194f + 41(1-f)` row is refuted, the additive row is what the machinery gives.  Consequence: on a 123 GiB box the
+window is bounded by what can be **pinned** out of the same 123 GiB the page cache needs, so the 122B's 2-3x is not
+reachable (**+10-40 % at a 20-40 % window** is the honest target) and **all-or-nothing per table** becomes a hard
+sizing requirement (P2b), not a nicety.
+
+**P0.3 -- PASS.**  A captured decode graph replays with the remap in the op stream: `graphs reused = 94` for 96
+tokens, `graph reallocs = 4 / 0`, `device remap: 11640 tables served, 0 declined`, no per-token host readback, text
+byte-identical to the all-device arm.  Publishing the map once is an optimisation (the per-op remap costs <= 1 %).
+
+**Text purity held across every arm**: 377 chars, `sha=ae39ec41bc1e` for the device arm, the CPU path, the 99.5 %
+cold arm (both registration modes) and the whole window sweep.  `scripts/check-gpu-faults.sh`: kernel journal and
+the sampled logs clean.  One P0-scoped scaffolding hunk on the campaign branch (`pool_mmap_thp_pin`: a read-only
+pool registration is refused only when the demote can actually run, i.e. `g_enabled && g_pool_sink`), so that
+`MOE_HOST_POOL_SINK=0 MOE_HOST_POOL_RO=1` is the isolation arm; campaign-branch only, no default changed.
+
 ## 261110.001 (wip) -- `apu-expert-pool` CLOSED and archived; `wip/uma-static-window` opens with the design the measurements actually support
 
 **Nothing in `patches/`; `release.json` untouched.**  The campaign spent 2026-11-09/10 trying to open the *shipped

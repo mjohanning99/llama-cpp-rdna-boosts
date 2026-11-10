@@ -1,8 +1,37 @@
 # wip/uma-static-window — a heat-ranked, read-only **static window** for host-resident MoE experts on a UMA APU
 
-**Status: OPEN — scoping note, nothing implemented, nothing in `patches/`.**  This campaign exists because the
-previous one ([`archive/work/apu-expert-pool/`](../../archive/work/apu-expert-pool/CONCLUSION.md)) disproved its
-own thesis.  Read the CONCLUSION first; this file assumes it.
+**Status: OPEN — P0 DONE (2026-11-10), decision below; still nothing in `patches/`.**  This campaign exists
+because the previous one ([`archive/work/apu-expert-pool/`](../../archive/work/apu-expert-pool/CONCLUSION.md))
+disproved its own thesis.  Read the CONCLUSION first; this file assumes it.
+
+> ### P0 verdict (the full record, arms and censuses: [`p0/RESULTS.md`](p0/RESULTS.md))
+>
+> **1. The transport is free (PASS).**  99.48 % of routed expert accesses served **in place** from a
+> registered **read-only** pool, one arena slot per table: **59.8 / 60.1 t/s** against **62.7 / 62.9**
+> with every expert on the device and **35.0 / 35.1** for the CPU expert path — **+71 % over the CPU path,
+> −4.5 % against device memory.**  Nothing here is a compromise, and the machinery already exists.
+>
+> **2. One routed op mixes window + in-place experts for free, but it cannot mix GPU with CPU-computed
+> experts — and the delivered split granularity is the TABLE, not the expert.**  A per-expert window inside
+> the GPU is smooth (5→75 % window: 53.3/55.6/58.3/59.3 t/s).  But a table that gets no GPU representation
+> falls to the CPU and the **whole** decode drops to CPU parity (96/120 tables served on the GPU → 35.5;
+> 81/120 → 34.5; CPU path → 35.0).  The split is a **cliff**: it is a fixed per-token cost of having a
+> CPU-side MoE chain at all, not a proportional one.  §2's "the split is per expert" is what the *heat prior*
+> ranks, not what the graph can express.
+>
+> **3. The remap survives a captured decode graph (PASS).**  `graphs reused = 94` for a 96-token decode,
+> `graph reallocs = 4 / 0`, `device remap: 11640 tables served, 0 declined`, no per-token host readback, text
+> byte-identical to the all-device arm.  Publishing the map once is an **optimisation, not a requirement**:
+> the per-op remap costs ≤ 1 %.
+>
+> **The stop rule is not triggered, but §3's arithmetic is.**  No measured arm overlapped the CPU part with
+> the GPU part, so the honest model is **additive**, and on a 123 GiB box the window size is bounded by what
+> can be **pinned** out of the same 123 GiB the page cache needs.  The 2–3x target on the 122B is **not
+> reachable**; a realistic target is **+10–40 % at a 20–40 % window** (+43 % predicted at 40 %).  The campain's
+> aim becomes: *the pinned fraction runs at device speed, the window never leaves a table unserved*, and a
+> static window's real win over the shipped tier is that it removes the 1 000–17 000 fills per 96 tokens the
+> LRU does today.  **The read-band question is still open** (the 35B is latency-bound at 46 GB/s of effective
+> expert traffic and cannot resolve 60 vs 230 GB/s) — see §9.4.
 
 Cut against the **r243 tree** (`release.json`: tip `72f7753f`, tree `e9300f1`).  Every file this campaign cites is
 identical to r242's (r243 touched only `src/models/qwen4exp.cpp`).
@@ -56,10 +85,20 @@ Per token the 122B routes ~3.8 GiB of expert bytes.
 | mixed, window fraction *f* | `1 / (f/194 + (1−f)/41)` | f = 0.6 → ~77 GB/s → **~20 t/s** |
 | mixed, if CPU and GPU overlap | `194f + 41(1−f)` | f = 0.6 → ~133 GB/s → **~35 t/s** |
 
-So the target is **2–3x the CPU path on the 122B** with a 60 % window, and the *split* is the heat map's job.  Any
-result below 10.9 t/s means the per-expert split or the in-place read is not working, not that the box is slow.
+So the naive target was **2–3x the CPU path on the 122B** with a 60 % window, and the *split* is the heat map's
+job.  **P0 measured that split and refuted the overlap row**: the CPU part adds its time, it does not overlap
+([`p0/RESULTS.md`](p0/RESULTS.md) §4).  Use the additive row instead, and remember that window bytes are *pinned*
+bytes taken away from the page cache the CPU complement reads from.  Any result below 10.9 t/s means the per-table
+split or the in-place read is not working, not that the box is slow.
 
-## 4. The one question that decides whether this is a campaign (do this FIRST)
+## 4. The one question that decides whether this is a campaign — **ANSWERED (P0, 2026-11-10)**
+
+> Measured, on `halo`, Qwen3.6-35B-A3B Q4_K_M: the in-place pool read is **+71 % over the CPU expert path and
+> −4.5 % against device memory**; one routed op **can** mix window-resident and pool-cold experts (free); a
+> **table** without a GPU representation costs the entire win.  Full arms, censuses and the corrected arithmetic:
+> [`p0/RESULTS.md`](p0/RESULTS.md).  The subsections below are the original questions, kept as asked.
+
+### The questions as posed
 
 **Can a table op run with *some* experts in the window (GPU, in place) and the rest on the CPU, cheaply?**
 
@@ -88,7 +127,8 @@ and write the negative result — that is a successful campaign outcome, and che
 |---|---|---|
 | P1 | window sizing and selection: `-lme N` GiB, heat-prior ranking, fill-then-register, one WARN line declaring heat-map mode and the window size | the window is exactly N GiB, registered RO, and the census reports its coverage |
 | P2 | static remap published at load; the window's tables route to it with no per-op readback | 122B decode **> 10.9 t/s**; no `takeover` per token in the census |
-| P3 | the complement on the CPU expert path, per expert (the P0.2 answer) | the split is visible in the census and the sum of both paths is the measured throughput |
+| P2b | **all-or-nothing per table**: window sizing must never leave a host table without an arena/window slot, and the census must assert `tables == n_host_tables` (P0: losing 20 % of the tables costs the whole win) | no arm with a partial table set; a `tables` shortfall is a hard failure, not a WARN |
+| P3 | the complement: **GPU-served in place** where it can be pinned, CPU only where it cannot, and the table is the granularity (the P0.2 answer) | the split is visible in the census and the sum of both paths is the measured throughput (additive — do not budget for overlap) |
 | P4 | policy: fits → no tier (advisory); does not fit → heat-map mode declared; `-ncmoe` no-op WARN; kill switches | `ENVIRONMENT.md` rows, defaults per the default-on policy, no change on a discrete box |
 
 Reuse, do not rewrite: the pool's per-table slots, `src_path`/`src_offs` registration from the loader, the
@@ -157,3 +197,14 @@ it — not from the retired experiment.
    the persisted prior) or must it be fixed for the life of the process?  (Fixed is simpler and is the assumption
    above.)
 3. Does the discrete path keep the arena **and** the pool as shipped (assumed yes — nothing here touches it)?
+4. **NEW (P0, and the one number the whole per-token arithmetic rests on): what is the GPU's effective
+   bandwidth on the *real* expert access pattern** — 8 random ~0.6 MiB reads per routed op out of
+   an 18 GiB read-only-registered window?  The probe's 198–233 GB/s is a *sequential 1 GiB sum*; the
+   35B's decode measures 46 GB/s effective but is latency-bound, so it cannot separate 46 from 230.  Two
+   ways to close it: an ~80-line HIP probe of that access pattern, or the 122B arm itself.  Every window
+   size in §3's table is a guess until this is measured.
+5. **NEW (P0): is a window that is *not* a copy cheaper?**  Registering a `/llm/models` file mapping
+   read-only measured 230.5 GB/s too (`archive/work/apu-expert-pool/MEASUREMENTS.md` §3), and the pages are
+   already in the page cache and shared with the CPU path — i.e. a *zero-copy* window, with no anonymous
+   buffer and no fill.  The catch is the same one that bounds everything else: registration **pins**
+   (probe §9), so the window is still spent out of the page cache's own budget.  Worth a P1 arm.

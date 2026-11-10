@@ -1,0 +1,3 @@
++ env -m /llm/models/Qwen3.6/35B-A3B/Q4_K_M/Qwen3.6-35B-A3B-Q4_K_M.gguf -ngl 99 -c 4096 -p 'The capital of France is' -n 64 --seed 42 --temp 0 --single-turn --no-display-prompt -t 12 -ncmoe 0
+env: invalid option -- 'm'
+Try 'env --help' for more information.
