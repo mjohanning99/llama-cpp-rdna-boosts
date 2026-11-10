@@ -273,3 +273,36 @@ The design is not refuted — the transport is free (§ above) and the static pr
 **Next (P1):** the ballast rig, IQ4_NL, static-window arm vs the copy tier vs the CPU path — plus the
 launch-shape lever from §A.2 (a 1024-thread routed block is worth 177 vs 95 GB/s at 8 rows, which is free
 bandwidth for whoever owns that kernel).
+
+## E. "Is the CPU still doing the expert work?" — checked three ways (maintainer's question)
+
+The `cold100-strict` census reports 99.48 % cold, but the log carries
+`ggml_backend_cpu_graph_n_threads: offloaded MoE (host-resident expert weights): using 8 of 12 threads` in **every**
+host-expert arm, and the graph still has 120 scheduler splits — so "is the CPU computing MoE here?" had to be
+answered directly rather than assumed.  `ggml_backend_cpu_graph_n_threads` scans the **CPU split** for a
+`MUL_MAT_ID` whose weight is a *host* buffer owned by another backend (`ggml-cpu.cpp:207-218`), i.e. exactly a
+host-expert tensor, so the line is real evidence that such nodes exist somewhere in the run — but it is logged
+once per process, so it cannot say *how many*, and the prompt-eval/load graphs alone can trigger it.
+
+Three measurements (`p0/cpuwatch.sh` samples `/proc/<pid>/stat` and `rocm-smi`; the `-t` arms re-run the same
+arm):
+
+| arm | mean CPU (of one core) | mean GPU busy | decode | `-t 4` | `-t 1` |
+|---|---|---|---|---|---|
+| `ref-device` | 65.9 % | 21.4 % | 62.6 | — | **62.8** |
+| `cpu-path` | **759.3 %** | 42.3 % | 35.9 | 33.8 | **26.7** |
+| `cold100-strict` | **142.9 %** | 21.9 % | 60.0 | 60.0 | **59.8** |
+
+**The cold arm is not on the CPU expert path.**  It is completely **thread-insensitive** (60.0 at `-t 12`, 60.0 at
+`-t 4`, 59.8 at `-t 1`) against the CPU path's 35.9 → 26.7, and its CPU is 143 % against the CPU path's 759 %.  The
+GPU does the expert math; `takeover = 11760` (all 120 tables × 96 tokens) matches the op count, and the decode rate
+equals the all-device arm's.
+
+**But the observation was not empty:** the cold arm spends **~77 % of one core more than `ref-device`** (142.9 vs
+65.9) on the same graph — the per-op cache bookkeeping (`access_locked` per expert, the cold-id encoding, the remap
+publish).  That is the "per-op host round-trip" the design exists to remove, it is measurable, and it is the one
+place where the CPU is still in the loop.  It does not bind on a 16-core box; it would on a smaller one.
+
+**A second, unexpected result in the same table:** the CPU path itself is only **1.35x** slower at `-t 1` than at
+`-t 12` (26.7 vs 35.9).  So the 35B's CPU expert path is **latency-bound, not thread-bound** — which is why the GPU
+wins only 1.7x there and why this model cannot be used to size a bandwidth argument at all (§A, §C).

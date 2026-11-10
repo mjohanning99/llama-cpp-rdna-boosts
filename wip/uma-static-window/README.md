@@ -59,9 +59,10 @@ On a shared host/device pool (a UMA APU) "VRAM" and host RAM are the **same DRAM
 model mapping is already resident, and the GPU reading a resident buffer measures **194–199 GB/s** while 15 CPU
 cores read the same bytes in place at **~41 GB/s effective**.  A model whose expert set does not fit therefore has
 exactly two usable behaviours today: *all* experts on the device (impossible — the set is bigger than RAM) or the
-**CPU expert path** (`-ncmoe`, 10.9 t/s on Qwen3.5-122B-A10B Q8_0).  The shipped discrete tier (arena + pinned
-pool + copies) is **3x slower** than that CPU path at this size class, because on UMA its copy buys no faster
-medium and its per-op remap costs a host round-trip per routed op.
+**CPU expert path** (`-ncmoe`; P0 measures **5.7–8.0 t/s** steady state on Qwen3.5-122B-A10B Q8_0 here — see the
+correction below).  The shipped discrete tier (arena + pinned pool + copies) was recorded as **3x slower** than
+that CPU path at this size class, because on UMA its copy buys no faster medium and its per-op remap costs a host
+round-trip per routed op.
 
 **The goal is therefore not residency** — the kernel's page cache already holds the bytes — **but the GPU reading
 the hottest experts where they are: no copy, no eviction, no per-op host round-trip.**
@@ -95,7 +96,7 @@ Per token the 122B routes ~3.8 GiB of expert bytes.
 
 | read path | rate | ceiling |
 |---|---|---|
-| CPU, in place from page cache (today) | ~41 GB/s | **10.9 t/s** (measured) |
+| CPU, in place from page cache (today) | ~41 GB/s | **5.7–8.0 t/s** (P0, §P0 4 — state-dependent) |
 | GPU, in place from a registered window | ~194 GB/s | **51 t/s** |
 | mixed, window fraction *f* | `1 / (f/194 + (1−f)/41)` | f = 0.6 → ~77 GB/s → **~20 t/s** |
 | mixed, if CPU and GPU overlap | `194f + 41(1−f)` | f = 0.6 → ~133 GB/s → **~35 t/s** |
@@ -103,8 +104,19 @@ Per token the 122B routes ~3.8 GiB of expert bytes.
 So the naive target was **2–3x the CPU path on the 122B** with a 60 % window, and the *split* is the heat map's
 job.  **P0 measured that split and refuted the overlap row**: the CPU part adds its time, it does not overlap
 ([`p0/RESULTS.md`](p0/RESULTS.md) §4).  Use the additive row instead, and remember that window bytes are *pinned*
-bytes taken away from the page cache the CPU complement reads from.  Any result below 10.9 t/s means the per-table
-split or the in-place read is not working, not that the box is slow.
+bytes taken away from the page cache the CPU complement reads from.  Any result below the **CPU path's own**
+measured rate (5.7–8.0 t/s on the 122B here) means the per-table split or the in-place read is not working, not
+that the box is slow.
+
+> **CORRECTION (2026-11-10): the "10.58 / 10.90 / 10.89 t/s" 122B CPU-path figure has no arm behind it.**  It
+> appears only in `archive/work/apu-expert-pool/CONCLUSION.md`, while that campaign's own
+> `MEASUREMENTS.md` has no 122B section at all, its `README.md` §11 says "the **>RAM acceptance arm has not been
+> run**", and its `HANDOVER.md` opens with "the case the campaign exists for — a model LARGER than RAM — has not
+> been run".  **P0's own 122B arms are the first recorded ones on this box**: `-ncmoe 48 -c 8192`, cache off,
+> marginal **8.0 t/s** over tokens 64..320 and **5.7 t/s** over 320..600 — the rate *falls* with length, because a
+> 123.4 GiB set cannot stay in a 123 GiB box's page cache.  Treat the old figure as unverified; use the measured
+> range.  (The ratio matters: the old number made the CPU path look 25–90 % faster than it is, which made the
+> campaign's upside look proportionally larger.)
 
 ## 4. The one question that decides whether this is a campaign — **ANSWERED (P0, 2026-11-10)**
 

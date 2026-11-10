@@ -6,6 +6,17 @@ campaign's own thesis.  Read this page before any of the others; the campaign's 
 and `HANDOVER.md` describe a design that the numbers below killed, and the last of them
 (`NEXT-SESSION-PROMPT.md`) is obsolete.
 
+> **CORRECTION (2026-11-10, added by `wip/uma-static-window` P0 — the record is otherwise left as written).**  The
+> three 122B figures below (`10.58 / 10.90 / 10.89` t/s and the arena triples) have **no arm behind them**: this
+> directory's `MEASUREMENTS.md` contains no 122B section, `README.md` §11 says "the **>RAM acceptance arm has not
+> been run**", and `HANDOVER.md` opens with "the case the campaign exists for — a model LARGER than RAM — has not
+> been run".  The first *recorded* 122B arms are in `wip/uma-static-window/p0/RESULTS.md` §C: `-ncmoe 48 -c 8192`,
+> cache off, marginal **8.0 t/s** over tokens 64..320 and **5.7 t/s** over 320..600 (the rate falls with length —
+> the set cannot stay in the page cache), and `-ncmoe 24` (57.4 GiB of experts on the device) **8.5** — i.e. no
+> placement win at all, because on UMA the device pool and the page cache are one resource.  The *qualitative*
+> conclusion below (do not port the discrete tier to UMA; the medium is the same on both sides) stands on the
+> probes, which are recorded.
+
 ## What the campaign believed
 
 That the host-expert / expert-arena tier shipped for discrete cards could be opened on a UMA APU (gfx1150/1151

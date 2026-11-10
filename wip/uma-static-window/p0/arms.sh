@@ -32,7 +32,7 @@ export LD_LIBRARY_PATH=/opt/rocm-10.1.0-gfx1151/lib
 export HIP_VISIBLE_DEVICES=0
 
 COMMON=(-m "$MODEL" -ngl 99 -c 4096 -p "The capital of France is" -n "$N"
-        --seed 42 --temp 0 --single-turn --no-display-prompt -t 12)
+        --seed 42 --temp 0 --single-turn --no-display-prompt -t "${THREADS:-12}")
 
 # MOE_HOST_POOL_SINK=0 + a covering pool: the arena->pool demote (the only device-side writer of the
 # pool backing) is off, which is what makes a READ-ONLY registration legal (moe-expert-cache.cu).

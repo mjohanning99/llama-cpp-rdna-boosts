@@ -1,3 +1,38 @@
+## 261110.004 (wip) -- `uma-static-window`: the 122B "10.9 t/s" has **no arm behind it**, and the cold arm is **not** on the CPU host-expert path
+
+**Nothing in `patches/`; no default changed.**  Two verifications the maintainer asked for; both landed in
+[`wip/uma-static-window/p0/RESULTS.md`](wip/uma-static-window/p0/RESULTS.md) (§C note, §E), with corrections in the
+live docs and a CORRECTION note on the archived record.
+
+**1. Provenance of "10.58 / 10.90 / 10.89 t/s" (122B CPU expert path).**  It exists in exactly one place:
+`archive/work/apu-expert-pool/CONCLUSION.md`.  That campaign's `MEASUREMENTS.md` has **no 122B section** (11 probes
+only), its `README.md` §11 says "the **>RAM acceptance arm has not been run**", and its `HANDOVER.md` opens with
+"the case the campaign exists for -- a model LARGER than RAM -- has not been run".  So the number has **no arm, no
+command, no log**; it is unverified.  The first *recorded* 122B arms are P0's (RESULTS §C): `-ncmoe 48 -c 8192`,
+cache off, marginal **8.0 t/s** over tokens 64..320 and **5.7 t/s** over 320..600 -- the rate **falls** with length,
+because a 123.4 GiB set cannot stay in a 123 GiB box's page cache -- and `-ncmoe 24` (57.4 GiB of experts on the
+device) **8.5**.  Corrected in `wip/uma-static-window/README.md` §1/§3 (with the measurement in place),
+`NEXT-SESSION-PROMPT.md`, and appended as a CORRECTION to the archived CONCLUSION (that record is otherwise left as
+written).  The campaign's upside had been sized against a CPU path 25-90 % faster than it measurably is.
+
+**2. Is the "99.5 % cold" arm secretly on the CPU expert path?**  The `offloaded MoE (host-resident expert
+weights): using 8 of 12 threads` line appears in every host-expert arm, so it was tested three ways instead of
+assumed (`p0/cpuwatch.sh` samples `/proc/<pid>/stat` + `rocm-smi`; the `-t` arms re-run the same arm):
+
+| arm | CPU (of one core) | GPU busy | `-t 12` | `-t 4` | `-t 1` |
+|---|---|---|---|---|---|
+| `ref-device` | 65.9 % | 21.4 % | 62.6 | -- | 62.8 |
+| `cpu-path` | **759.3 %** | 42.3 % | 35.9 | 33.8 | 26.7 |
+| `cold100-strict` | **142.9 %** | 21.9 % | **60.0** | **60.0** | **59.8** |
+
+The cold arm is **thread-insensitive** and its CPU is 5.3x below the CPU path's: the GPU does the expert math
+(`takeover = 11760` = all 120 tables x 96 tokens), and the decode rate equals the all-device arm's.  It is **not**
+the upstream host-expert path.  **But the extra ~77 % of one core over `ref-device` is real**, and it is the per-op
+cache bookkeeping (`access_locked` per expert, the cold-id encoding, the remap publish) -- the very "per-op host
+round-trip" the design removes, now measured.  Bonus finding: the CPU path is only 1.35x slower at `-t 1`, i.e. it
+is **latency-bound, not thread-bound**, which is why the GPU wins only 1.7x on the 35B and why that model cannot
+size a bandwidth argument.
+
 ## 261110.003 (wip) -- `uma-static-window` P0 addendum: the window reads at **device speed** (231 vs 232 GB/s), the band is set by launch shape, and the 122B is a **capacity** wall, not a band one
 
 **Nothing in `patches/`; no default changed.**  Follows `261110.002`; the record is

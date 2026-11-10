@@ -42,7 +42,7 @@ outcome.
 
 | case | reference |
 |---|---|
-| Qwen3.5-122B-A10B Q8_0 (`-ncmoe 48 -c 32768`), CPU expert path | **10.58 / 10.90 / 10.89 t/s** — the number the design must beat |
+| Qwen3.5-122B-A10B Q8_0, CPU expert path | **5.7–8.0 t/s** steady state (P0, `-c 8192`, cache off).  The older "10.58 / 10.90 / 10.89" has **no recorded arm** — the closed campaign's own docs say the >RAM arm was never run; see the CORRECTION in `README.md` §3 |
 | the same model, the old arena tier (32 / 70 GiB) | 3.75 / 3.82 / 3.04 and 3.29 / 2.84 / 2.36 — **do not reproduce this** |
 | Qwen3.8-Flash-Next IQ4_NL 87 GiB + MTP drafter, 31 GiB ballast, `-ncmoe 24`, old arena 21 GiB | 37.4 / 43.6 / **44.0 t/s** — the control that must not regress |
 | the same, CPU path | 29.7 / 30.8 / 31.0 t/s |
