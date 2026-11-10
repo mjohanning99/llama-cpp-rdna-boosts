@@ -39,6 +39,18 @@ disproved its own thesis.  Read the CONCLUSION first; this file assumes it.
 > already measures 44.0 vs the CPU path's 31.0 (+42 %) — not a >RAM model on a 123 GiB box, which has no
 > slack to give.**  P1 target: beat the copy tier there with the static window.
 >
+> **5. P1 (capacity-constrained rig, `p0/RESULTS.md` §F): the window has no configuration left on this box.**
+> IQ4_NL under a 31 GiB ballast, `-ncmoe 24` (31.6 GiB host set), `-n 384`: the **shipped tier is 26.3 t/s**
+> against the **CPU path's 14.8** -- its win is **capacity** (24.1 GiB arena + 21.5 GiB pool = 45.6 GiB of a
+> 63 GiB set, h = 0.925), not transport.  A static window must *cover every table it serves*, which here means
+> pinning the whole host set: 31 (ballast) + 34.4 (device) + 31.6 (pinned) = 97 GiB against 88 available, so it
+> cannot be built at a budget that fits.  A partial window is predicted to lose (P0: per-table split, cliff).
+> **The recorded "44.0 / 31.0 t/s" references for this model have the same provenance problem as the 122B's
+> (CONCLUSION-only, no arm, and `wip/bench-56gb/RESULTS.md` never ran IQ4_NL).**  Net: fits -> the window equals
+> a device placement; >RAM -> no slack; capacity-constrained -> the window cannot cover its tables.  Recommend
+> closing the campaign as a **negative with two kept results** (the launch-shape band, §A; and the reference
+> correction, §C/§F) -- the decision is the maintainer's, and nothing here is in `patches/`.
+>
 > **The stop rule is not triggered, but §3's arithmetic is.**  No measured arm overlapped the CPU part with
 > the GPU part, so the honest model is **additive**, and on a 123 GiB box the window size is bounded by what
 > can be **pinned** out of the same 123 GiB the page cache needs.  The 2–3x target on the 122B is **not

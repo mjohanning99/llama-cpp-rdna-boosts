@@ -306,3 +306,49 @@ place where the CPU is still in the loop.  It does not bind on a 16-core box; it
 **A second, unexpected result in the same table:** the CPU path itself is only **1.35x** slower at `-t 1` than at
 `-t 12` (26.7 vs 35.9).  So the 35B's CPU expert path is **latency-bound, not thread-bound** — which is why the GPU
 wins only 1.7x there and why this model cannot be used to size a bandwidth argument at all (§A, §C).
+
+---
+
+# F. P1 -- the capacity-constrained rig (IQ4_NL, 48 layers, 512 experts, 10 used, 63 GiB of experts)
+
+The rig: `wip/bench-56gb/ballast 31` (mlock'd, own session, MemAvailable 120 -> 88 GiB), IQ4_NL Flash-Next,
+`-ncmoe 24` (host expert set **31.6 GiB**, device model 34.4 GiB), `-c 8192`, `-n 384`, no MTP drafter, `-t 12`.
+
+**The recorded references do not survive measurement.**  The closed campaign's "44.0 t/s tier / 31.0 t/s CPU path"
+figure exists in exactly one place -- the same `CONCLUSION.md` that carries the unverified 122B numbers -- and
+`wip/bench-56gb/RESULTS.md` has no IQ4_NL arm (that rig ran GSQ-RCO-IQ3_S).  Measured here, same rig, same protocol:
+
+| arm | what | decode (n=384) |
+|---|---|---|
+| `cpu-path` | `-ncmoe 24`, host experts in the page cache, cache **off** | **14.8 t/s** |
+| `tier21` | `-lme 21`, the **shipped tier** (arena 24.1 GiB + pool 21.5 GiB, h = 0.925) | **26.3 t/s** |
+
+So the *qualitative* claim in the closed record holds — a tier is worth **+78 %** in the capacity-constrained case —
+while the absolute numbers are 1.7–2.0x below the unverified ones.  (The two arms' greedy text differs, `0584eff2` vs
+`83d058e8`: expected and not a defect — the CPU path computes those experts with the CPU kernels and the tier with
+the GPU's, and text identity is a per-kernel-path property, not a cross-backend one.)
+
+**The static window cannot be measured in this configuration, and that is the finding.**  The tier's win above is
+**capacity**, not transport: 24.1 GiB of arena **plus** 21.5 GiB of pool covers 45.6 GiB of a 63 GiB expert set
+(h = 0.925).  A static window has to *cover every table it serves* (`pool_covers_table`: `slots >= n_experts`) or its
+cold ids are not valid — so a covering window on this rig means pinning the whole 31.6 GiB host set, and
+31 (ballast) + 34.4 (device) + 31.6 (pinned) = 97 GiB against 88 GiB available.  It does not fit.  At a budget that
+*does* fit (21 GiB), the delivered pool spreads ~340 of 512 slots per table, i.e. **no table is covered** and the
+window shape degenerates to the shipped one.
+
+**And a partial window (some tables GPU, the rest CPU) is predicted to lose**, from P0's two results: the split is
+per table, and its cost is a cliff.  On this model a 21 GiB whole-table window covers ~11 % of the layers, and P0's
+`window100`/`cold100` arms show that any CPU-side MoE chain drags the decode to the CPU path's rate.  That is a
+prediction from P0, **not** a measurement — making it a measurement needs the per-table placement policy that does
+not exist yet (a P2-sized change).
+
+**So, after P0 + P1, there is no configuration on this box where the static window beats what already ships:**
+
+| regime | measured | the window's place |
+|---|---|---|
+| fits (35B, 21 GiB of 116) | window = **device parity** (59.8–60.1 vs 62.7), +71 % over the CPU path | works, but on UMA it *is* a device placement plus a copy — `band.cpp` shows 231.0 vs 232.1 GB/s |
+| does not fit (122B, 123.4 GiB) | 8.5 vs 8.0 t/s with 57 GiB moved to the device | nothing: no slack, the box is the constraint |
+| capacity-constrained (IQ4_NL + 31 GiB ballast) | shipped tier **26.3** vs CPU path **14.8** | cannot be built at a budget that fits (covering window = whole host set pinned) |
+
+The two results worth keeping regardless of the campaign's fate: **the window read is device-speed and its band is
+set by launch shape** (§A), and **the 122B/44.0 reference numbers had no arm behind them** (§C, §F).

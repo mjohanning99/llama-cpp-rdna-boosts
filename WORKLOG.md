@@ -1,3 +1,29 @@
+## 261110.005 (wip) -- `uma-static-window` P1: the shipped tier's win on the capacity rig is **capacity**, and a covering static window cannot be built there
+
+**Nothing in `patches/`; no default changed.**  Record: [`p0/RESULTS.md`](wip/uma-static-window/p0/RESULTS.md) §F,
+arms in `p0/p1.sh`, verdict in the campaign README.  Rig: `wip/bench-56gb/ballast 31` (mlock'd, own session,
+MemAvailable 120 -> 88 GiB), IQ4_NL Flash-Next (48 layers, 512 experts, 10 used, 63 GiB of experts), `-ncmoe 24`
+(host expert set 31.6 GiB, device 34.4 GiB), `-c 8192`, `-n 384`, no MTP, `-t 12`.
+
+**The rig's recorded references do not survive measurement.**  The closed campaign's "44.0 t/s tier against the CPU
+path's 31.0" is in the same CONCLUSION-only state as its 122B numbers (no arm, no log; `wip/bench-56gb/RESULTS.md`
+never ran IQ4_NL -- that rig used GSQ-RCO-IQ3_S).  Measured here, same rig, same protocol: **CPU path 14.8 t/s**,
+**shipped tier (`-lme 21`) 26.3 t/s** -- the qualitative claim (+78 % from a tier in the capacity-constrained case)
+holds, the absolutes are 1.7-2.0x lower.  (The two arms' greedy text differs -- 0584eff2 vs 83d058e8 -- which is
+expected: the CPU path uses CPU kernels for those experts and the tier uses the GPU's.)
+
+**The static window cannot be measured at a budget that fits, and that is the finding.**  The tier wins by
+*capacity*: 24.1 GiB arena + 21.5 GiB pool = 45.6 GiB of a 63 GiB set (h = 0.925).  A static window must **cover
+every table it serves** (`pool_covers_table`: `slots >= n_experts`) or its cold ids are invalid -- so covering this
+rig's host set means pinning 31.6 GiB, and 31 (ballast) + 34.4 (device) + 31.6 (pinned) = 97 GiB against 88
+available.  At 21 GiB the delivered pool spreads ~340 of 512 slots per table, i.e. **no table is covered**.
+
+**Net, after P0 + P1: no configuration on this box where the static window beats what ships.**  Fits (35B): the
+window is **device parity** (+71 % over the CPU path) but on UMA a window *is* a device placement plus a copy
+(231.0 vs 232.1 GB/s).  >RAM (122B): no slack (8.5 vs 8.0).  Capacity-constrained: the window cannot cover its
+tables.  Recommendation in the README: close as a **negative with two kept results** -- the launch-shape band
+(`p0/band.cpp`) and the reference-number correction -- for the maintainer to decide.
+
 ## 261110.004 (wip) -- `uma-static-window`: the 122B "10.9 t/s" has **no arm behind it**, and the cold arm is **not** on the CPU host-expert path
 
 **Nothing in `patches/`; no default changed.**  Two verifications the maintainer asked for; both landed in
