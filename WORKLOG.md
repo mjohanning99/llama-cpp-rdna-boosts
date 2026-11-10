@@ -1,3 +1,26 @@
+## 261110.010 (wip) -- `uma-static-window` P2 step 2: the zero-copy WINDOW runs (18.6 GiB, fills=0, 58.5 t/s) but reads the wrong bytes -- open
+
+**Campaign branch only, opt-in (`MOE_HOST_POOL_ALLOC=window`), no default changed, nothing in `patches/`.**  P2 step
+2 landed as a fourth *pool memory type*: its slots are the model file's own pages, mapped into a heat-ranked,
+fixed-stride VA range (`MAP_FIXED` per expert from the page-aligned floor of its file offset) and registered
+`ReadOnly`.  Everything downstream -- the pool slot table, the cold-id encoding, `moe_cache_get_cold`, the cold-read
+kernels -- is used unchanged: `win_stride = host_bytes + page` absorbs the file-offset residue (so two slots'
+mappings cannot overlap) and `cold_base` is shifted by it.
+
+**Mechanically it works** (35B, `-ncmoe 40 --host-experts pool -lm mmap`, `FRAC=100`, arena 1 slot/table): `WINDOW
+pool: 256 slots of 589824 B are the model file's OWN pages ... stride 593920, residue 1824`; `host pool (L2): 120
+tensors, 30720 slots, 18662.0 MiB pinned; h=1.0000, fills=0 evictions=0`; `expert access: cold=87.80 %`;
+**58.5 t/s** with `MemAvailable` min 113747 MiB (an 18.6 GiB copy pool costs 18.6 GiB; this costs ~0).  The copy-pool
+arm measures 59.8-60.1 and the CPU path 35.0 -- so 1.67x the CPU path for no memory.
+
+**But the DATA is wrong**: 114 chars `sha=4c3e25f4ca2b` against the reference's 377 chars `sha=ae39ec41bc1e`, at
+*both* slot orders (heat-ranked and `MOE_HOST_POOL_WINDOW_ORDER=id`), so it is not a slot-vs-expert id convention --
+the bytes at a window slot are not that expert's bytes.  The naming measurement (recorded in RESULTS §K): compare
+`host_bytes` from a window slot against `t.host + rank[s]*host_bytes`; the suspect is the file offset, because
+`p.file_offs = t.src_offs` is consumed here as the *file* offset while the pool's other users treat `t.src_offs` as
+the *slice* offset (`moe_cache_get_cold` adds it to `base_dev`), so the window needs the loader's real
+`(path, data-offset)` pair.  Until then the mode must not be used for a measurement: correct mechanism, wrong source.
+
 ## 261110.009 (wip) -- `uma-static-window`: the prefill baseline is **175.2 t/s** at 4059 tokens / `-ub 4096`, and 43 % of it is the fill memcpy
 
 **Nothing in `patches/`.**  The maintainer's question: with a 4096-token prompt and `-ub 4096`, what is the current

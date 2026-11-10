@@ -543,3 +543,40 @@ reachable on this APU regardless of I/O.
 `MOE_HOST_POOL_RAM_PCT=90` on top of the 32 GiB budget, which lets the pool pin ~96 GiB — the same swap case §H.2
 already measured as fatal (22 GiB of swap, 0.8 t/s).  The 175 t/s arm above used the **default** ceiling.  Any arm
 that raises the pool ceiling on this box must be treated as a swap-containment test, not a throughput arm.
+
+---
+
+# K. P2 step 2 — the window is built and served, but its DATA is wrong (open)
+
+**Landed on the campaign branch** (`MOE_HOST_POOL_ALLOC=window`, opt-in, no default changed): a fourth pool memory
+type whose slots are the model file's own pages, mapped into a heat-ranked, fixed-stride VA range and registered
+`ReadOnly`.  The existing pool slot table, cold-id encoding, `moe_cache_get_cold` and cold-read kernels consume it
+unchanged (`win_stride = host_bytes + page` absorbs the tensor's file-offset residue; `cold_base` is shifted by that
+residue).
+
+**What works** (35B, `-ncmoe 40 --host-experts pool -lm mmap`, `MOE_HOST_POOL_FRAC=100`, arena 1 slot/table):
+
+```
+pool_window_map_locked: WINDOW pool: 256 slots of 589824 B are the model file's OWN pages, mapped into a
+  heat-ranked fixed-stride range (stride 593920, residue 1824); slots ranked by the persisted heat prior.
+  No copy, no fill, no eviction; the cold-read path addresses it unchanged
+host pool (L2): 120 tensors, 30720 slots, 18662.0 MiB pinned; h=1.0000 (233/233), fills=0 evictions=0
+expert access: hits=11293 fills=113 colds=82122   cold=87.80 %     **58.5 t/s**
+MemAvailable min 113747 MiB   (an 18.6 GiB copy pool would have cost 18.6 GiB; this cost ~0)
+```
+
+So mechanically the design is realised: **18.6 GiB of heat-ranked residency, zero fills, zero evictions, 87.8 % of
+routed accesses read in place from the model's own pages, at 58.5 t/s** (the copy-pool arm `cold100-strict` measures
+59.8-60.1, the CPU path 35.0) — i.e. **1.67x the CPU path for no memory at all.**
+
+**What is wrong:** the generated text is **not** the reference's.  `-n=96, seed 42`:
+reference (all-device, CPU path, copy pool) = 377 chars `sha=ae39ec41bc1e`; the window arm = **114 chars
+`sha=4c3e25f4ca2b`**, at both slot orders (heat-ranked and `MOE_HOST_POOL_WINDOW_ORDER=id`), so it is **not** the
+slot-vs-expert id convention: the bytes at a window slot are not that expert's bytes.
+
+**The one measurement that names it:** read `host_bytes` from a window slot and compare with
+`t.host + rank[s]*host_bytes` (the pageable mapping).  A mismatch isolates the file-offset arithmetic —
+`p.file_offs = t.src_offs` is used as the *file* offset here, but the pool's other users treat `t.src_offs` as the
+slice offset (`moe_cache_get_cold` adds it to `base_dev`), so the window needs the loader's real
+`(path, data-offset)` pair rather than that field.  Until it is fixed the mode must not be used for a measurement:
+it is a correct *mechanism* with a wrong *source*.
