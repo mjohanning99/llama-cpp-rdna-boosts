@@ -92,11 +92,15 @@ the hottest experts where they are: no copy, no eviction, no per-op host round-t
 
 One tier, chosen once, read in place:
 
-1. **A static window.**  At load, the persisted **expert heat prior** picks the hottest experts of each table; their
-   bytes are copied **once** from the model mapping into an anonymous, 4 KiB-aligned buffer (the "window"), which is
-   then registered `ReadOnly` for the GPU.  **Fill first, register after** — measured: register-then-fill is
-   70–210 MB/s (page-fault bound) against ~7 GB/s the other way round, and 193 GB/s `pread` / 6.5 GB/s `O_DIRECT`
-   into an already-registered range.
+1. **A static window.**  At load, the persisted **expert heat prior** picks the hottest experts of each table; the
+   window is **the model mapping's own pages for those experts, registered `ReadOnly` in place** — NOT a copy.
+   *(Amended 2026-11-10, P0 §H: the copy this step used to specify is exactly what makes a 96 GiB window 96 GiB
+   **more** than the box has — measured, it swapped 22 GiB and decoded at 0.8 t/s.  Registering the existing pages
+   costs no memory, and `p0/band.cpp`'s `file-ro` arm measures the result at **221.0 GB/s at 32 rows/op and
+   99.2 GB/s at 8** — identical to `hipMalloc`.  Registration pins, so the window is sized to fit; the ranges are
+   per expert (3.19 MiB each on the 122B), and the complement stays pageable.)*  Fill-then-register survives only as
+   the fallback for a range that is not already resident — register-then-fill is 70–210 MB/s (page-fault bound)
+   against ~7 GB/s the other way round.
 2. **Static residency ⇒ static remap.**  Because the window never changes, each table's `expert → slot` map is
    published **once at load**.  The per-op routing readback (`takeover`/`get_ok` in the old census, one synchronise
    per routed op, 144/token on the 122B) disappears by construction — that is the single biggest cost this design

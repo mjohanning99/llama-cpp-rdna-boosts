@@ -394,3 +394,65 @@ faster storage for the 6-11 % that streams — not a window.
 RAM and reads it ~13x faster than the CPU (the shipped tier's whole reason for existing on discrete cards), or a
 smaller model where the expert set fits RAM but not the device share (`wip/moe-static-hot-tier`'s territory, and
 the reason the campaign's home moved to the capacity rig in §F).
+
+---
+
+# H. The 96 GiB question — the arithmetic is RIGHT, and it amends the design
+
+**Maintainer's argument:** with the hottest ~96 GiB heat-managed, the hit rate is ~98 %, so only ~1 in 50
+experts comes from SSD at ~6 GB/s — so decode should run at near-full speed on the hits and slow down only on
+the misses.
+
+**Measured from the persisted prior itself** (`p0/prior.py`, which parses the `MHT2` sidecar — no model load,
+no arena, no slab): Qwen3.5-122B-A10B Q8_0, 144 tables × 256 experts, 114.8 GiB of expert bytes, 3.19 MiB per
+expert, total routed mass 5 029 992 decode-band accesses:
+
+| resident | % of bytes | **hit rate** | miss traffic / token |
+|---|---|---|---|
+| 8 GiB | 7.0 % | 39.99 % | 2.28 GiB |
+| 24 GiB | 20.9 % | 64.86 % | 1.34 GiB |
+| 48 GiB | 41.8 % | 85.89 % | 0.54 GiB |
+| 64 GiB | 55.8 % | 93.99 % | 0.23 GiB |
+| 80 GiB | 69.7 % | 98.42 % | 60 MiB |
+| **96 GiB** | **83.7 %** | **99.94 %** | **2 MiB** |
+| 104 GiB | 90.6 % | 100.00 % | 0 |
+
+So at 96 GiB the miss traffic is **2 MiB/token** — the SSD term is *nil*, exactly as argued.  And the prior also
+shows why `-ncmoe` cannot express it: **the mass per table is uniform to 1 %** (min 34 672, max 34 936), so a
+*layer* placement covers its byte fraction of the mass and nothing more.  That is why `-ncmoe 24` (50 % of the
+bytes) measured +6 % rather than +50 %: it was a heat-blind placement, not an upper bound for a heat-ranked one.
+**§G's "upper bound" was therefore wrong** and is superseded by this section.
+
+**Predicted decode with a 96 GiB heat-ranked window:** 0.9994 × 3.8 GiB/token read at the measured window band —
+**99 GB/s at the per-layer launch shape (8 rows/op) → ~26 t/s, 177 GB/s with a 1024-thread block → ~47 t/s, 221 GB/s
+for ≥32 rows → ~55 t/s** — against the all-host CPU path's 8.0 t/s measured here.  **3-6x stock**, which is the
+campaign's original claim and is now supported by data rather than assumed.
+
+## The two things that broke, and the amendment
+
+**1. The shipped pool cannot deliver it, because the pool is a COPY.**  Run: `-lme 96 --host-experts pool -lm mmap`
+with the RAM ceiling lifted (`MOE_HOST_POOL_RAM_PCT=0`; the branch's UMA default is **10 % of MemAvailable =
+11.97 GiB**, which silently scaled a planned 96 GiB pool by 0.122 → 26 slots/table → h = 3.8 %, 82 170 evictions,
+3.2 t/s — worth knowing on its own).  With the ceiling lifted the pool really did pin **98 226 MiB**, and the box
+**swapped 22 GiB** (MemAvailable 3.7 GiB) and decoded at **0.8 t/s**: 96 GiB pinned is 96 GiB *on top of* the
+mapping it was filled from, and 96 + 8.6 (weights) + 4.75 (slab) + the complement's pages does not fit a 116 GiB
+budget.  Its own hit rate was also only h = 0.84 — the delivered pool spreads ~214/256 slots uniformly per table,
+not the heat-shaped allocation `MOE_HOST_POOL_SIZING=1` fits.
+
+**2. So the window must not be a copy — it must be the model's own pages, registered read-only.**  `p0/band.cpp`'s
+`file-ro` arm (the one never run until now): **the real GGUF mmap, 8 GiB registered `ReadOnly`, read at 221.0 GB/s
+(32 rows/op) and 99.2 GB/s (8 rows/op) — identical to `hipMalloc`.**  Zero copy, so it costs **no extra memory**:
+96 GiB of pinned file pages + 8.6 GiB of device weights ≈ 105 GiB of 116, and the complement (18.8 GiB, 0.06 % of
+accesses) stays pageable and is read on demand.
+
+**Amendment to the design (README §2, step 1).**  It currently says "their bytes are copied **once** … into an
+anonymous, 4 KiB-aligned buffer".  That copy is what makes the configuration 96 GiB *more* than the box has.  The
+form that satisfies the maintainer's arithmetic is: **register the hot experts' pages of the model mapping
+`ReadOnly`, in place — fill-then-register becomes register-what-is-already-resident**, which the probe's
+`file-ro` arm now measures at device speed.  Cost: registration pins (probe §9, ~8.7 s per 46 GiB), the ranges are
+per expert (3.19 MiB each, ~30 800 of them at 96 GiB) because a table's hottest experts are scattered through an
+expert-major tensor, and a *pageable* fallback remains for the complement.
+
+**What is now genuinely unmeasured and worth building (P2):** per-expert RO registration of the mapping + the
+existing heat prior + the existing per-expert cold-read path, then the 122B arm at 96/88/80 GiB.  Predicted 26-55
+t/s against stock's 8.0.  The launch-shape lever (§A.2) is worth +80 % of band on its own at 8 rows.

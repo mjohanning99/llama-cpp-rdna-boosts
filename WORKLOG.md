@@ -1,3 +1,43 @@
+## 261110.007 (wip) -- `uma-static-window`: the 96 GiB arithmetic is RIGHT (99.94 % hit rate), and it amends the design -- the window must be the model's own pages, not a copy
+
+**Nothing in `patches/`.**  The maintainer argued that a heat-managed ~96 GiB window must give a ~98 % hit rate, so
+decode should run at near-full speed on the hits and slow only on the misses.  **Measured from the persisted prior,
+the argument is right** -- and it overturns the previous entry's claim.  Record:
+[`p0/RESULTS.md`](wip/uma-static-window/p0/RESULTS.md) §H; analysis in `p0/prior.py` (parses the `MHT2` sidecar, no
+model load, no arena, no slab).
+
+**The prior, on Qwen3.5-122B-A10B Q8_0** (144 tables x 256 experts, 114.8 GiB, 3.19 MiB/expert): 24 GiB resident ->
+64.86 % hit, 48 -> 85.89 %, 64 -> 93.99 %, 80 -> **98.42 %**, **96 GiB -> 99.94 % (2 MiB/token of misses)**,
+104 -> 100 %.  So the SSD term at 96 GiB is *nil*, as argued.  The prior also shows why `-ncmoe` cannot express it:
+**the mass per table is uniform to 1 %** (34 672-34 936), so a layer placement covers its byte fraction and no more --
+which is exactly what `-ncmoe 24` measured (+6 %), and why the previous entry's "upper bound" was wrong.
+
+**Predicted decode with a 96 GiB heat-ranked window**: 0.9994 x 3.8 GiB/token at the measured band -- 99 GB/s at 8
+rows/op (~26 t/s), 177 GB/s with a 1024-thread block (~47), 221 GB/s at >=32 rows (~55) -- against the all-host CPU
+path's **8.0 t/s**.  **3-6x stock.**
+
+**Two things broke, and one is a design amendment.**
+
+1. **The shipped pool cannot deliver it: the pool is a COPY.**  With the branch's UMA pool ceiling lifted
+   (`MOE_HOST_POOL_RAM_PCT=0`; the default is **10 % of MemAvailable = 11.97 GiB**, which silently scaled a planned
+   96 GiB pool by 0.122 -> 26 slots/table -> h = 3.8 %, 82 170 evictions, 3.2 t/s), the pool really pinned
+   98 226 MiB -- and the box **swapped 22 GiB** and decoded at **0.8 t/s**: 96 GiB pinned is 96 GiB *on top of* the
+   mapping it filled from.  Its hit rate was also only h = 0.84 (uniform ~214/256 slots/table; heat-shaped sizing is
+   `MOE_HOST_POOL_SIZING=1`).
+
+2. **So the window must not be a copy -- it must be the mapping's own pages, registered read-only.**  `p0/band.cpp`'s
+   `file-ro` arm (never run before): the real GGUF mmap registered `ReadOnly` reads at **221.0 GB/s at 32 rows/op and
+   99.2 GB/s at 8 -- identical to hipMalloc**, at **zero extra memory**.
+
+**Design amendment (README §2 step 1):** "copied once into an anonymous buffer" -> **register the hot experts'
+pages of the model mapping `ReadOnly`, in place**.  Cost: registration pins (~8.7 s per 46 GiB measured earlier), the
+ranges are per expert (~30 800 at 96 GiB) because a table's hot experts are scattered through an expert-major tensor,
+and the complement stays pageable.
+
+**What is now unmeasured and worth building (P2):** per-expert RO registration of the mapping + the existing heat
+prior + the existing per-expert cold-read path, then the 122B at 96/88/80 GiB.  Predicted 26-55 t/s against stock's
+8.0; the launch-shape lever (§A.2) is worth +80 % of band on its own at 8 rows/op.
+
 ## 261110.006 (wip) -- `uma-static-window`: the 122B is a **no**, provable as an upper bound (+6 %), because the shortfall is invariant to placement
 
 **Nothing in `patches/`.**  Answers the maintainer's question directly: *is there any path where the campaign runs
