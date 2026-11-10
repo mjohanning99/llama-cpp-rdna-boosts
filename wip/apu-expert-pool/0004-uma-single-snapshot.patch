@@ -1,0 +1,218 @@
+From 4cc296f6eec500259507d657c33292e785ad0bb7 Mon Sep 17 00:00:00 2001
+From: Stew Forster <stew675@gmail.com>
+Date: Mon, 9 Nov 2026 18:12:11 -0600
+Subject: [PATCH] wip: apu-expert-pool -- the UMA split takes ONE snapshot of
+ free system memory, so the 75 % VRAM and 10 % pool shares are shares of the
+ same figure
+
+The percentages were already of the FULL free figure (not of a remainder), but they were
+read at two different instants: measured on halo, the advisory's 75 % came from
+MemAvailable = 118 870 MiB while the arena's came from 102 190 MiB, i.e. the two shares did
+not add up to 85 % of anything.  Pool's 10 % would have been a third instant.
+
+Now the loader takes the snapshot once (it runs first in the real load, before the model
+mapping is populated), hands it to the backend through a new
+ggml_backend_dev_moe_cache_set_uma_free() hook, and the cache uses it for BOTH shares and the
+slab cap.  Measured after: advisory "~89542.4 MiB = 75%" and arena "budget 89542 MiB/device"
+are the same figure; with 120 GiB free the split is VRAM 90 + pool 12 + 18 left to the OS.
+
+Also fixes a link-time landmine found doing this: the public setter must live OUTSIDE
+moe-expert-cache.cu's anonymous namespace.  Inside it the symbol has internal linkage, the
+compiler drops it, and the binary dies at startup with `libggml-hip.so.0: undefined symbol:
+moe_cache_set_uma_free_bytes` -- which is exactly what happened on the first attempt.
+
+Note: the same anonymous-namespace rule caught us once already in this campaign; the new
+hook is placed after `} // namespace` with a comment saying why.
+
+Measured: greedy text still byte-identical to `-ncmoe 0`; `MOE_EXPERT_CACHE_UMA=0` disarms the
+slab.  The pool's 10 % ceiling is implemented but NOT exercised in this config (the pool is
+sized by MOE_HOST_POOL_FRAC of the host set, 3814 MiB < 11.9 GiB, so the ceiling does not
+bind) -- it needs the >RAM arm to prove.
+---
+ ggml/include/ggml-backend.h            |  1 +
+ ggml/src/ggml-backend-impl.h           |  6 +++++
+ ggml/src/ggml-backend.cpp              |  7 +++++
+ ggml/src/ggml-cuda/ggml-cuda.cu        |  6 +++++
+ ggml/src/ggml-cuda/moe-expert-cache.cu | 36 ++++++++++++++++++++++++--
+ ggml/src/ggml-cuda/moe-expert-cache.h  |  1 +
+ src/llama-model-loader.cpp             | 12 +++++++--
+ 7 files changed, 65 insertions(+), 4 deletions(-)
+
+diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
+index d72bb88d7..45c2dd535 100644
+--- a/ggml/include/ggml-backend.h
++++ b/ggml/include/ggml-backend.h
+@@ -301,6 +301,7 @@ extern "C" {
+     // loader backs the tensor with the read-only model mapping (page cache) and every GPU read of it is
+     // served through the bounded pinned host pool.
+     GGML_API ggml_backend_buffer_type_t    ggml_backend_dev_moe_host_master_buft(ggml_backend_dev_t device);
++GGML_API void                          ggml_backend_dev_moe_cache_set_uma_free(ggml_backend_dev_t device, int64_t bytes);
+ 
+     // Wrap an existing host pointer (for example a range of the read-only model mapping) in a buffer of
+     // `buft` without taking ownership of it, so tensors can be placed directly in it.  Returns NULL when
+diff --git a/ggml/src/ggml-backend-impl.h b/ggml/src/ggml-backend-impl.h
+index f1aac78a0..bab743e55 100644
+--- a/ggml/src/ggml-backend-impl.h
++++ b/ggml/src/ggml-backend-impl.h
+@@ -565,6 +565,12 @@ extern "C" {
+         // positional-initializer reason above; zero-initialized for backends that do not set it (a backend
+         // that never answers leaves the pool on its own default).
+         void (*moe_cache_set_host_fill_mode)(ggml_backend_dev_t dev, int direct);
++
++        // (optional) wip/apu-expert-pool: the ONE free-system-memory figure the UMA budget split (VRAM 75 % /
++        // pool 10 %) is computed from, so both shares are shares of the same number and add up to 85 %.  The
++        // loader takes the snapshot (it runs first, before the model mapping is populated) and passes it in.
++        // APPENDED at the end for the same positional-initialization reason as `moe_host_master_buft`.
++        void (*moe_cache_set_uma_free)(ggml_backend_dev_t dev, int64_t bytes);
+     };
+ 
+     struct ggml_backend_device {
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index 8091607dc..ca8ce25b7 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -369,6 +369,13 @@ void ggml_backend_dev_moe_cache_set_host_source(ggml_backend_dev_t dev, const vo
+ // wip/host-expert-master-drop (TODO #55): the buffer type a pool-backed (mapping-backed, NOT pinned) host
+ // expert master should use.  NULL when the backend keeps its pinned master (the default), so no caller
+ // changes behaviour unless the backend opts in.
++void ggml_backend_dev_moe_cache_set_uma_free(ggml_backend_dev_t dev, int64_t bytes) {
++    if (dev == nullptr || dev->iface.moe_cache_set_uma_free == nullptr) {
++        return;
++    }
++    dev->iface.moe_cache_set_uma_free(dev, bytes);
++}
++
+ ggml_backend_buffer_type_t ggml_backend_dev_moe_host_master_buft(ggml_backend_dev_t dev) {
+     if (dev == nullptr || dev->iface.moe_host_master_buft == nullptr) {
+         return nullptr;
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index ca851bd51..573f2e0d4 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -10025,6 +10025,11 @@ static void ggml_backend_cuda_device_moe_cache_set_reserve(ggml_backend_dev_t de
+     moe_cache_set_extra_reserve(ctx->device, bytes);
+ }
+ 
++static void ggml_backend_cuda_device_moe_cache_set_uma_free(ggml_backend_dev_t dev, int64_t bytes) {
++    (void) dev;
++    moe_cache_set_uma_free_bytes(bytes);
++}
++
+ static bool ggml_backend_cuda_device_moe_cache_stats(ggml_backend_dev_t dev, int64_t * hits, int64_t * misses, int64_t * arena_bytes) {
+     (void) dev;
+     return moe_cache_get_stats(hits, misses, arena_bytes);
+@@ -10266,6 +10271,7 @@ static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
+     /* .moe_heat_open             = */ ggml_backend_cuda_device_moe_heat_open,
+     /* .moe_heat_score            = */ ggml_backend_cuda_device_moe_heat_score,
+     /* .moe_cache_set_host_fill_mode = */ ggml_backend_cuda_device_moe_cache_set_host_fill_mode,
++    /* .moe_cache_set_uma_free  = */ ggml_backend_cuda_device_moe_cache_set_uma_free,
+ };
+ 
+ // backend reg
+diff --git a/ggml/src/ggml-cuda/moe-expert-cache.cu b/ggml/src/ggml-cuda/moe-expert-cache.cu
+index c5fb4dea8..510daec4d 100644
+--- a/ggml/src/ggml-cuda/moe-expert-cache.cu
++++ b/ggml/src/ggml-cuda/moe-expert-cache.cu
+@@ -1625,6 +1625,29 @@ static int64_t pool_available_ram_bytes() {
+ //   * the remaining ~15 %                 = the OS, the page cache and the model mapping the pool fills from
+ // The percentages are ceilings, not reservations: a tier only takes what its tables need.  `MOE_HOST_POOL_RAM_PCT`
+ // and `MOE_EXPERT_CACHE_MIB` remain the operator's authoritative overrides on any platform.
++// wip/apu-expert-pool: ONE snapshot of free system memory for the UMA split.  The two shares (VRAM 75 %, pool
++// 10 %) must be percentages of the SAME figure or they do not add up: measured on halo, reading MemAvailable
++// separately gave 118 870 MiB for the advisory's 75 % and 102 190 MiB for the arena's, i.e. two different boxes.
++// The loader takes the snapshot (it runs first, before the model mapping is populated) and passes it in here;
++// `uma_free_bytes()` latches a reading only as a fallback.
++static int64_t g_uma_free = -1;
++
++static void uma_set_free(int64_t bytes) {
++    if (bytes > 0) {   // the loader's snapshot wins: it is the figure the advisory quotes
++        g_uma_free = bytes;
++    }
++}
++
++static int64_t uma_free_bytes() {
++    if (g_uma_free < 0) {
++        const int64_t a = pool_available_ram_bytes();
++        if (a > 0) {
++            g_uma_free = a;
++        }
++    }
++    return g_uma_free;
++}
++
+ static bool uma_any_device() {
+     static const bool v = [] {
+         for (int i = 0; i < GGML_CUDA_MAX_DEVICES; i++) {
+@@ -1945,7 +1968,9 @@ static int64_t pool_ram_cap_locked() {
+         return 0;
+     }
+     if (g_pool_ram_cap < 0) {
+-        const int64_t avail = pool_available_ram_bytes();
++        // wip/apu-expert-pool: on a shared pool the ceiling is 10 % of the SAME free figure the arena's 75 % came
++        // from, so the two shares add up (85 %) instead of being shares of different instants.
++        const int64_t avail = uma_any_device() ? uma_free_bytes() : pool_available_ram_bytes();
+         // issue #274 follow-up (@DanoPTT): on Windows this figure is NOT the pinned ceiling.  WDDM charges
+         // pinned host pages against the adapter's SHARED (aperture) segment, and the published model for that
+         // is roughly (total RAM / 2) / visible GPUs (ROCM-33542 / rocm-systems#14578, ROCm/TheRock#9339:
+@@ -5595,6 +5620,13 @@ void alloc_all_locked() {
+ 
+ } // namespace
+ 
++// wip/apu-expert-pool: the ONE free-system-memory figure the UMA split (VRAM 75 % / pool 10 %) is computed from.
++// Defined OUTSIDE this file's anonymous namespace on purpose: inside it the symbol has internal linkage and the
++// compiler drops it (measured: libggml-hip.so carried an undefined reference), which fails at load time.
++void moe_cache_set_uma_free_bytes(int64_t bytes) {
++    uma_set_free(bytes);
++}
++
+ static void devremap_batch_clear_locked();   // device remap: drop the pending sibling batches (defined with g_dr_batch)
+ static void report_locked();                 // the whole exit census (defined with `moe_cache_report` below)
+ 
+@@ -5749,7 +5781,7 @@ bool moe_cache_preflight(int device, size_t host_expert_bytes, size_t aux_reserv
+             if (mib_env != nullptr && atoi(mib_env) > 0) {
+                 budget = (size_t) atoi(mib_env) * 1024 * 1024;
+             } else {
+-                const int64_t avail = pool_available_ram_bytes();
++                const int64_t avail = uma_free_bytes();
+                 if (avail <= 0) {
+                     g_enabled = false;
+                     GGML_LOG_WARN("%s: MoE expert cache OFF on device %d: MOE_EXPERT_CACHE_UMA needs a RAM "
+diff --git a/ggml/src/ggml-cuda/moe-expert-cache.h b/ggml/src/ggml-cuda/moe-expert-cache.h
+index 4e3a09f34..992205b1b 100644
+--- a/ggml/src/ggml-cuda/moe-expert-cache.h
++++ b/ggml/src/ggml-cuda/moe-expert-cache.h
+@@ -90,6 +90,7 @@ struct moe_cache_alias {
+ 
+ bool moe_cache_enabled();
+ bool moe_cache_host_pool_enabled();
++void moe_cache_set_uma_free_bytes(int64_t bytes);
+ // true once the cache is sized with host-expert tables: the workspace pool then keeps a free-VRAM floor on its
+ // first attempt (ggml_cuda_pool_leg::alloc)
+ bool moe_cache_floor_active();
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 8654d9209..3fa9f060d 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -261,9 +261,17 @@ void llama_model_loader::plan_host_expert_placement(int n_layer_trunk) {
+     // whose reads are the same bus but with no staging decision in the path) for no capacity gain.  We only
+     // INFORM -- the placement is honoured as requested.
+     {
+-        const size_t vram = host_experts_available_bytes() * 75 / 100;   // the same 75 % the cache budgets
++        // ONE snapshot, handed to the backend so the arena's 75 % and the pool's 10 % are shares of the same
++        // figure (they must add up to 85 %); the advisory below uses the very same bytes.
++        const int64_t free_b = host_experts_available_bytes();
++        if (free_b > 0) {
++            for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
++                ggml_backend_dev_moe_cache_set_uma_free(ggml_backend_dev_get(i), free_b);
++            }
++        }
++        const size_t vram = free_b > 0 ? (size_t) free_b * 75 / 100 : 0;
+         if (vram > 0 && n_bytes > 0 && n_bytes <= vram) {
+-            LLAMA_LOG_WARN("%s: this model (%.1f MiB) FITS in this APU's usable device memory (%.1f MiB = 75%% "
++            LLAMA_LOG_WARN("%s: this model (%.1f MiB) FITS in this APU's usable device memory (~%.1f MiB = 75%% "
+                            "of MemAvailable): host-resident MoE experts (`-ncmoe`/`-cmoe`/`-lme`, "
+                            "`--host-experts %s`) gain nothing here and cost decode bandwidth, because on a "
+                            "shared host/device pool the experts would already be device-resident.  `-ncmoe 0` "
+-- 
+2.56.0
+

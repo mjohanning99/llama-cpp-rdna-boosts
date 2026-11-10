@@ -213,6 +213,13 @@ to all of it:
 | **10 %** | the pinned expert pool, **auto mode only** | `MOE_UMA_POOL_PCT` (the UMA-aware default of `MOE_HOST_POOL_RAM_PCT`, which is now `-1 = auto`) |
 | ~15 % | the OS, the page cache, and the model mapping the pool fills from | — |
 
+Both are shares of **one snapshot** of free system memory, taken by the loader before the model mapping is
+populated and handed to the backend (`ggml_backend_dev_moe_cache_set_uma_free`).  Without that, the two are
+shares of different instants and do not add up: measured on `halo`, the first attempt read `MemAvailable` twice
+and got 118 870 MiB for the advisory's 75 % against 102 190 MiB for the arena's — and the pool's 10 % would have
+been a third.  With one snapshot, a 120 GiB box splits **VRAM 90 GiB + pool 12 GiB + 18 GiB** left to the OS, and
+on the measurement box the advisory and the arena budget report the same figure (89 542 MiB).
+
 They are **ceilings, not reservations**: a tier takes only what its tables need (measured on `halo`: pool
 3814 MiB against a 10.2 GiB ceiling, so it did not bind; arena 76 643 MiB = 75 % of `MemAvailable`).
 `MOE_EXPERT_CACHE_MIB` and an explicit `MOE_HOST_POOL_RAM_PCT` remain authoritative on any platform.
