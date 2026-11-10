@@ -45,6 +45,17 @@ device-readable at the same band as a registered one (4/4 runs, byte-exact vs `p
 pageable memory faults every run.  What that does not answer is what the GPU does when such a page is **reclaimed
 mid-kernel** — a GPU fault is a queue hang, not a retry — which is the whole question for a >RAM working set.
 
+
+**Gate note (reported, not fixed).**  `scripts/gate-host-pool.sh` on this build: **40/42**, the two failures both
+the demote arms' *vacuity* (`sink: 0 demoted`, `sinkfail: no copy-error declines`) — every other check green,
+including all seven arms' text byte-identical (`sha=a99ccbd97ecb`), `takeover=0` on the fault arms, and the exit
+census once from teardown.  The cause is the arm's config on this box, not the window work: with
+`MOE_HOST_LIMIT_FRAC=40` the branch's UMA ceiling clamps the pool 40012 -> 11965 MiB (0.299) and the *prewarm* fills
+it to 147/153 slots, so a decode-band admission finds no free slot to demote into.  None of this session's edits can
+affect a non-window pool (every one of them is behind `p.window`, and the accessors return the identical values when
+it is false), so the arm was already vacuous here; it is flagged so the next change to the pool's sizing does not
+inherit a silently-dead gate arm.
+
 New: `p0/regprobe.cpp` (the content probe `band.cpp` never was), `p0/window122.sh` (bounded 122B window arms with a
 sampler), `p0/arms.sh window-pool`, and `MOE_HOST_POOL_WINDOW_VERIFY=1` in the fork (CPU-side + kernel-side content
 check of every window slot, against the model mapping).
