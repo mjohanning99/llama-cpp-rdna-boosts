@@ -1,0 +1,48 @@
+
+
+Loading model... |-\|/-\|/-\|/-\|/-\|/-\ 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b12228-437dd6491
+model      : /llm/models/Qwen3.6/35B-A3B/Q4_K_M/Qwen3.6-35B-A3B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> # Mixed code / reasoning workload (phase switching)
+
+Work through the following ten tasks in order. For **each** task, first write two or three paragraphs
+of plain prose that reason about the design trade-offs and the alternatives you rejected, and only
+then give the short code snippet itself. Do not batch the code at the end: the prose and the snippet
+must alternate, task by task.
+
+1. A ring buffer that overwrites the oldest element when full.
+2. A bounded worker pool that drains a task queue o ... (truncated)
+
+[Start thinking]
+
+Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - **Task:** Work through 10 specific programming tasks in order.
+   - **Format Requirement:** For *each* task, first write 2-3 paragraphs of plain prose reasoning about design trade-offs and rejected alternatives
+
+[ Prompt: 507.4 t/s | Generation: 58.9 t/s ]
+
+
+Exiting...

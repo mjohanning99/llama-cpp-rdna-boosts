@@ -87,6 +87,16 @@ case "$ARM" in
           MOE_EXPERT_CACHE_ADMIT=2 MOE_EXPERT_CACHE_TOUCH=2)
     ARGS=(-ncmoe 40 --host-experts pool -lm mmap)
     ;;
+  window-pool)
+    # wip/uma-static-window P2 (`p0/RESULTS.md` §M): the ZERO-COPY window -- the pool's slots ARE the model
+    # file's own expert pages, mapped read-only and heat-ranked.  FRAC=100 so every table's window covers all
+    # of its experts: the cold-id space has exactly two levels (an arena slot, or `n_res + cold index` at ONE
+    # stride), so a window that covers only part of a table cannot be expressed and every routed op declines.
+    ENVV=(MOE_HOST_POOL_ALLOC=window "${COVER[@]}" MOE_EXPERT_CACHE_MIB="${MIB:-24576}"
+          GGML_CUDA_SLAB_RESERVE_MIB="${RESERVE:-1024}"
+          MOE_EXPERT_CACHE_SLOTS=1 MOE_EXPERT_CACHE_TOUCH=1000000)
+    ARGS=(-ncmoe 40 --host-experts pool -lm mmap)
+    ;;
   pinned-set)
     ENVV=(); ARGS=(-ncmoe 40 --host-experts pinned)
     ;;

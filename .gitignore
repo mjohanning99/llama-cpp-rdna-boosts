@@ -13,3 +13,8 @@ wip/bench-56gb/runs/
 wip/bench-56gb/matrix-*.log
 wip/bench-56gb/ballast
 wip/bench-56gb/prompt_*.txt
+
+# wip/uma-static-window probe binaries (built from the .cpp beside them, never committed)
+wip/uma-static-window/p0/band
+wip/uma-static-window/p0/winprobe
+wip/uma-static-window/p0/regprobe

@@ -580,3 +580,123 @@ slot-vs-expert id convention: the bytes at a window slot are not that expert's b
 slice offset (`moe_cache_get_cold` adds it to `base_dev`), so the window needs the loader's real
 `(path, data-offset)` pair rather than that field.  Until it is fixed the mode must not be used for a measurement:
 it is a correct *mechanism* with a wrong *source*.
+
+---
+
+# L. P2 step 3 — the window is CORRECT (2026-11-10).  Two defects, both in the layout, and the constraint that ends
+# the 122B arms
+
+§K said the window's *data* was wrong and suspected the file-offset arithmetic.  That suspicion was wrong: the
+mapping was right from the start.  Two other defects were behind the wrong text, and neither is visible to a
+bandwidth probe — which is exactly how the P0 "transport is free" result was measured.
+
+## L.1 The naming measurement, done properly (`p0/regprobe.cpp`, and `MOE_HOST_POOL_WINDOW_VERIFY=1` in the fork)
+
+§K's measurement had never been run.  Doing it needs **three** comparisons, not one, because the pool's slot base is
+derived twice (once for the CPU, once for the device alias) and because a `cudaMemcpy` out of a host pointer is
+short-circuited by the UVA runtime into a CPU memcpy — it "confirms" a device view the GPU never sees.
+
+| what | how | result |
+|---|---|---|
+| the mapping itself | `memcmp` slot bytes vs `t.host + rank[s]*host_bytes`, every slot | **256/256 match** (the file-offset arithmetic was never wrong) |
+| the device alias | **a kernel** copies `cold_base + s*stride` into a device buffer, then D2H, then `memcmp` | 8/8 match **once the layout below was fixed** |
+| the file mapping vs the file | `pread` vs the mapping | match |
+
+`p0/regprobe.cpp` isolates the same three questions outside llama: `anon-rw`/`anon-ro`/`file-rw`/`file-ro` (all
+match the file/pattern, CPU and device), and a `window` arm that reproduces the pool's own layout at 64 slots.
+
+## L.2 Defect 1 — the stride the kernel is told is in TYPE BLOCKS, so the pitch must be a whole number of them
+
+`mul_mat_vec_q_moe_launch` converts the cold geometry with `cold_channel_stride = cold_channel_bytes / ggml_type_size(type)`
+and indexes the expert table **in type blocks**.  §K's `win_stride = host_bytes + page` therefore truncated: on the
+35B's Q4_K (144 B blocks) 593920/144 = 4124.4 → 4124 blocks, i.e. **64 bytes short per slot, growing linearly** —
+every slot past 0 read a few bytes of its neighbour.  A partial-tail shift is invisible to bandwidth and fatal to text.
+
+## L.3 Defect 2 — a slot pitch of `host_bytes` makes two slots share a page, and a heat-ranked order permutes experts
+
+Slot s's content starts `residue` (`file_offs % 4096`, 1824 B here) bytes into its mapping, so with the pitch at
+`host_bytes` the tail of the *previous* slot needs the first `residue` bytes of the page at the *next* slot's start.
+That page is coherent only if `rank[s+1] == rank[s] + 1` — true for `MOE_HOST_POOL_WINDOW_ORDER=id`, **false for any
+heat ranking**.  Measured (`regprobe`, scattered 64-slot window): the mapping is right up to byte 588000 of 589824 and
+wrong for the last 1824 bytes, on 241 of 256 slots.
+
+**The fix is therefore one number.**  The pitch must be a multiple of `lcm(page, ggml_type_size(tensor->type))` and at
+least `host_bytes + residue`:
+
+* `host_bytes` is already a whole number of type blocks (it is the tensor's own expert stride), so the *pitch* only
+  needs the padding that carries `residue` past the next page **and** keeps the block unit exact;
+* 35B Q4_K_M: 589824 → **626688** (49 × 4096 × 9 units, +6.25 % of *address space*, of which only the first `residue`
+  bytes of each slot's tail page are ever read);
+* 122B Q8_0: 3342336 → **3411968** (+2.08 %).
+
+Registration is now **per slot** (the padding gaps are `PROT_NONE` and must not be pinned), and the window refuses to
+build — loudly, falling back to the copy pool — when a tensor's stride is not a page multiple or its type block size is
+unknown, rather than serving bytes the kernel cannot address.  The type block size is plumbed with the table
+registration (`moe_cache_table(..., type_blk)`).
+
+## L.4 The acceptance arm passes on both prompts
+
+35B-A3B Q4_K_M, `-ncmoe 40 --host-experts pool -lm mmap`, `MOE_HOST_POOL_ALLOC=window MOE_HOST_POOL_FRAC=100
+MOE_HOST_POOL_SINK=0 MOE_EXPERT_CACHE_SLOTS=1 MOE_EXPERT_CACHE_TOUCH=1000000`, `-t 12`, `HIP_VISIBLE_DEVICES=0`.
+
+| arm | text (`-n 96`, `seed 42`, no `-lv`) | rate | census (`-lv 4`) |
+|---|---|---|---|
+| copy pool (`cold100-strict`) | 377 chars `sha=ae39ec41bc1e` | 59.8-60.1 t/s | `fills=30720`, h=1.0 |
+| **window, heat-ranked** | **377 chars `sha=ae39ec41bc1e`** | **57.3 / 59.2 t/s** | `fills=0 evictions=0`, **cold 99.61 %**, 18662 MiB pinned for **~0 MiB** of pinned RAM |
+| window, `ORDER=id` | 377 chars `sha=ae39ec41bc1e` | — | — |
+| second prompt (`prompts/code-reasoning-mixed.txt`, `-n 64`) | **754 chars `sha=ff86b6990ce7`** on both the copy pool and the window | — | — |
+
+`p0/arms.sh window-pool 96` reproduces it; `p0/RESULTS.md` §M is the constraint that came out of the next arm.
+`check-gpu-faults.sh --since "120 min ago"` clean on every arm (the only journal faults on this box are from
+`07:03`, five hours before this session).
+
+## L.5 The constraint this exposed: a window cannot be PARTIAL, and that is what decides the 122B
+
+The 122B arm was run at 88 GiB (`p0/window122.sh 88 64`, results `261110-123228-122b-window88g-decode`).  The window
+itself is fine — `206/256` slots per table, `94554 MiB` pinned, `fills=0 evictions=0`, h=1.0 — and the run decodes at
+**0.9 t/s**, because:
+
+```
+device remap: 0 tables served, 9360 of 9360 offers declined
+MoE expert cache: h=0.0000 (0/0 reaches), fills=144 evictions=0, tables=144, slots=144
+```
+
+**The cold-id space has exactly two levels**: an arena slot (`id < n_res`) or `n_res + cold index`, resolved against
+**one** base and **one** stride (`moe_cache_get_cold`).  A covering pool gives every expert a cold id; a *partial*
+window cannot, so the routed op is unrepresentable, the eager path declines, and the layer falls to the scheduler's
+per-op host upload — the cliff, from the code side this time.  Both ways of writing the complement are blocked:
+
+* an **arena** covering the missing 50 experts/table is 23 GiB of *copy* — with the 88 GiB window that is 111 GiB
+  before the 8.6 GiB of device weights, i.e. over the box's budget;
+* a **third** id level (a per-slot base the kernel indexes instead of one stride) is new kernel machinery.
+
+So **a window must cover every expert of every table it serves.**  On the 122B with `-ncmoe 48` that is the whole
+114.8 GiB expert set, which does not fit beside the weights and the slab — so the 122B decode arm (96/88/80 GiB) and
+the 122B prefill arm are **not reachable on this box by construction**, not by tuning.  The prefill arm's 33 GiB was
+a *copy-pool* budget at h=0.488; a window at 33 GiB is partial, and declines.
+
+## L.6 The one thing that could lift the constraint (recorded, NOT built): unregistered FILE pages read at full band
+
+`p0/regprobe.cpp` also asks whether the GPU can dereference a *pageable* host pointer on this box, which would make
+the whole "map + register ReadOnly" step — and its pinning cost — unnecessary, and a partial window moot (the
+complement is the same page-cache pages the CPU reads).  Four runs, 35B gate tensor, 8 rows x 1024 threads:
+
+| arm | band (4 runs) | the device read |
+|---|---|---|
+| `hipMalloc` (device control) | 90.3 / 114.2 / 108.9 / 91.5 GB/s | match |
+| `file-ro` (registered `ReadOnly`) | 101.9 / 108.2 / 136.5 / 96.5 GB/s | match |
+| **`file-noreg`** — a fresh `MAP_SHARED\|PROT_READ` mapping, **never registered** | 104.0 / 108.2 / 137.3 / 96.0 GB/s | **match** (byte-exact vs `pread`) |
+| `anon-noreg` — fresh **anonymous** pageable memory | **GPU FAULT** every run | `Page not present or supervisor privilege` |
+
+So **file** pages are device-readable unregistered at the same band as a registered read, while **anonymous**
+pageable memory is not — which is exactly the distinction `bind_host_dev_locked` draws (a pageable master gets no
+device alias at all).  Two traps in reading this:
+
+* the *single-read* `anon-noreg` arm above it MATCHES only because that range had been
+  `hipHostRegister`ed/`unregister`ed earlier in the same process; the band arm allocates a **fresh** anonymous range
+  and faults, which is the honest answer.
+* **this is not a result yet.**  The probe reads 4.7 MB of a range it has just `memcpy`'d/paged in, in a process
+  whose page cache holds those pages.  It does not answer the only question that matters — what the GPU does when
+  one of those pages is **reclaimed** mid-kernel (a GPU fault is a queue hang, not a retry) — and a 96 GiB working
+  set on a 123 GiB box is exactly a reclaim scenario.  The three faults in this session's journal are this probe's
+  (they are `read_rows_bw`), not a delivery arm's; every product arm was clean.

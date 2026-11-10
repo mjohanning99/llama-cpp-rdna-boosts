@@ -1,0 +1,30 @@
+device: AMD Radeon 8060S Graphics (UVA=0, unmapped-host-access=1)
+anon-rw  registered: host 0x7fb792428720 dev 0x7fb792428720 (same=1)
+anon-rw  vs the pattern we wrote   cpu-view MATCH (first diff -1)   device MATCH (first diff -1, 2304/589824 zero bytes)
+anon-ro  registered: host 0x7fb792428720 dev 0x7fb792428720 (same=1)
+anon-ro  vs the pattern we wrote   cpu-view MATCH (first diff -1)   device MATCH (first diff -1, 2304/589824 zero bytes)
+file mapping vs pread: MATCH
+file-rw  registered: host 0x7fb78685d720 dev 0x7fb78685d720 (same=1)
+file-rw  vs the file (pread)       cpu-view MATCH (first diff -1)   device MATCH (first diff -1, 107719/589824 zero bytes)
+file-ro  registered: host 0x7fb78685d720 dev 0x7fb78685d720 (same=1)
+file-ro  vs the file (pread)       cpu-view MATCH (first diff -1)   device MATCH (first diff -1, 107719/589824 zero bytes)
+file-noreg vs the file (pread)       cpu-view MATCH (first diff -1)   device MATCH (first diff -1, 107719/589824 zero bytes)
+anon-noreg vs the pattern we wrote   cpu-view MATCH (first diff -1)   device MATCH (first diff -1, 2304/589824 zero bytes)
+anonfile registered: host 0x7fb784cdb720 dev 0x7fb784cdb720 (same=1)
+anonfile vs the file (pread)       cpu-view MATCH (first diff -1)   device MATCH (first diff -1, 107719/589824 zero bytes)
+hipMalloc  band  8 rows x 1024 thr:   144.00 MiB in   1.480 ms ->   95.0 GB/s
+file-ro    band  8 rows x 1024 thr:   144.00 MiB in   1.078 ms ->  130.4 GB/s
+file-noreg band  8 rows x 1024 thr:   144.00 MiB in   1.061 ms ->  132.5 GB/s
+Warning: Queue error - HSA_STATUS_ERROR_MEMORY_FAULT
+
+****************************************************************************
+*** GPU HANG ANALYSIS - VGPU(0x560e0dcc6a20) Queue(0x7fb79582a000)
+****************************************************************************
+SWq=0x7fb79582a000, HWq=0x7fb77e800000, id=1, priority=1, Dispatch Header = 0xb02 (type=2, barrier=1, acquire=1, release=1), setup=3, grid=[8192, 1, 1], workgroup=[1024, 1, 1], private_seg_size=0, group_seg_size=0, kernel_obj=0x7fb78d7d8f00, kernarg_address=0x7fb77ce00180, completion_signal=0x0, rptr=36, wptr=38
+****************************************************************************
+
+:0:rocdevice.cpp            :3948: 64110009165 us:  [host: halo, GPU index: 0, faulting addr: 0x7fb6747e9000, kernel: read_rows_bw(char const*, long, long, int, float*)]
+Memory access fault by GPU node-1 (Agent handle: 0x560e0dc63ce0) on address 0x7fb6747e9000. Reason: Page not present or supervisor privilege.
+Failed to write segment data: Invalid argument
+GPU coredump: handler exited with error (status: 1)
+GPU core dump failed

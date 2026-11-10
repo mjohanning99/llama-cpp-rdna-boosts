@@ -13,6 +13,15 @@ are in [`RESULTS.md`](RESULTS.md); this file is only the map from an arm name to
 | `window100` | `SLOTS=256`: the arena runs 0.4 GiB short, 24 tables fall to the CPU — the cliff |
 | `cold100` | a 6 GiB slab cap: the slab arms too small, 39 tables fall to the CPU |
 | `pinned-set` | `--host-experts pinned` on an iGPU (refused — the r243 policy) |
+| `window-pool` | **the P2 zero-copy window** (`MOE_HOST_POOL_ALLOC=window`, `FRAC=100`, 1 slot/table): the pool's slots ARE the model file's own pages, heat-ranked, read-only — the arm that must reproduce the reference text (§L.4) |
+
+Two probes stand beside the arms (each is its own binary, no model load through llama):
+
+| probe | what it answers |
+|---|---|
+| `band.cpp` | the window's **band** by launch shape and backing (`dev`/`anon-ro`/`anon-rw`/`file-ro`) — §A |
+| `regprobe.cpp` | the **content** half `band.cpp` never checked: is the byte at a window slot the expert's own, on the CPU *and* through a kernel?  Plus the same range **unregistered** (file vs anonymous), which is the question §L.6 leaves open |
+| `winprobe.cpp` | a 24 GiB zero-copy window built out of the real shard, its fault-in/register cost and its band — §I.1 |
 
 ## Three traps this harness had to climb
 

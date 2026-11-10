@@ -1,3 +1,54 @@
+## 261110.012 (wip) -- `uma-static-window` P2 FIXED: the zero-copy window is correct and free, and the constraint it exposes ends the 122B arms
+
+**Campaign branch only; opt-in env values; nothing in `patches/`; `release.json` untouched; no default changed.**
+The P2 window (`MOE_HOST_POOL_ALLOC=window`) now produces the reference text, and the campaign's decisive arms are
+**unreachable by construction** rather than unmeasured.  Full record: `wip/uma-static-window/p0/RESULTS.md` §L.
+
+**The bug was NOT the file-offset arithmetic §K suspected** (the mapping was byte-correct from the start — 256/256
+slots).  Two layout defects were behind the wrong text, and **neither is visible to a bandwidth probe**, which is how
+P0's "transport is free" was measured:
+
+1. the cold stride is divided by `ggml_type_size()` and indexed **in type blocks** (`mmvq-moe.cu`), so
+   `win_stride = host_bytes + page` truncated — Q4_K 593920/144 = 4124.4 -> 4124 blocks, **64 B short per slot,
+   drifting linearly**;
+2. a pitch of `host_bytes` makes consecutive slots **share a page** (a slot's content starts `residue` = 1824 B into
+   its mapping), which is coherent only when `rank[s+1] == rank[s]+1` — **never** for a heat ranking.  Measured
+   (`p0/regprobe.cpp`): right to byte 588000 of 589824, wrong for the last 1824, on 241/256 slots.
+
+The pitch is now the smallest multiple of `lcm(page, ggml_type_size(tensor->type))` that holds the expert plus its
+residue (35B 589824 -> **626688**, +6.25 % of address space; 122B 3342336 -> **3411968**, +2.08 %), registered **per
+slot** (the padding is `PROT_NONE` and never pinned), and the window **refuses** — loudly, falling back to the copy
+pool — when a tensor's stride is not a page multiple or its type block size is unknown.  `type_blk` is plumbed through
+`moe_cache_table(..., type_blk)`; every pool-slot address now goes through `pool_slot_host/dev/pitch()` (a window's
+slots are pitched by `win_stride`, and `base + slot*host_bytes` was wrong for every slot but 0).
+
+**Measured, 35B `-ncmoe 40`, `-n 96 seed 42 temp 0`, no `-lv`:** **377 chars `sha=ae39ec41bc1e`** (the reference) at
+**59.2 t/s**, heat-ranked, `fills=0 evictions=0`, **cold 99.61 %**, 18662 MiB pinned for **~0 MiB of pinned RAM** — the
+copy pool spends those 18.6 GiB for 59.8-60.1.  Second prompt
+(`prompts/code-reasoning-mixed.txt`, `-n 64`): `sha=ff86b6990ce7` on both the copy pool and the window.  Reproduce:
+`p0/arms.sh window-pool 96`.
+
+**The constraint (this is the campaign's answer, not a defect): a window cannot be PARTIAL.**  The cold-id space has
+exactly two levels — an arena slot, or `n_res + cold index` resolved against **one** base and **one** stride — so an
+op with some experts in the window and the rest in the page cache is unrepresentable; the eager path declines and the
+layer falls to the scheduler's per-op host upload.  Measured on the 122B at 88 GiB (`p0/window122.sh 88 64`): the
+window builds (`206/256` slots/table, 94554 MiB, `fills=0`) and the run decodes at **0.9 t/s**, `device remap: 0
+tables served, 9360 of 9360 offers declined`.  Covering the complement with an *arena* is 23 GiB of copy beside the
+88 GiB window — over budget before the 8.6 GiB of weights.  So **the 122B decode (96/88/80 GiB) and prefill window
+arms, and the capacity rig's, are unreachable on this box**; every path is now either "fits -> a window equals a
+device placement (`-ncmoe`), use that" or "does not fit -> a window cannot cover its tables".
+
+**Two forks left to the maintainer** (`wip/uma-static-window/NEXT-SESSION-PROMPT.md`): (A) a third location in the
+cold-id space (per-slot base, i.e. shared-kernel machinery) to make a partial window expressible; (B) resolve whether
+the map+register step is needed at all — `p0/regprobe.cpp` measures an **unregistered** `MAP_SHARED` file mapping
+device-readable at the same band as a registered one (4/4 runs, byte-exact vs `pread`) while fresh **anonymous**
+pageable memory faults every run.  What that does not answer is what the GPU does when such a page is **reclaimed
+mid-kernel** — a GPU fault is a queue hang, not a retry — which is the whole question for a >RAM working set.
+
+New: `p0/regprobe.cpp` (the content probe `band.cpp` never was), `p0/window122.sh` (bounded 122B window arms with a
+sampler), `p0/arms.sh window-pool`, and `MOE_HOST_POOL_WINDOW_VERIFY=1` in the fork (CPU-side + kernel-side content
+check of every window slot, against the model mapping).
+
 ## 261110.011 (wip) -- `uma-static-window`: P2 window mode committed on the fork, and a cold-session handover written
 
 **Nothing in `patches/`; no default changed.**  Two housekeeping commits so the next session starts from a real state

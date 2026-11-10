@@ -1,8 +1,35 @@
 # wip/uma-static-window — a heat-ranked, read-only **static window** for host-resident MoE experts on a UMA APU
 
-**Status: OPEN — P0 DONE (2026-11-10), decision below; still nothing in `patches/`.**  This campaign exists
-because the previous one ([`archive/work/apu-expert-pool/`](../../archive/work/apu-expert-pool/CONCLUSION.md))
-disproved its own thesis.  Read the CONCLUSION first; this file assumes it.
+**Status: OPEN — P0 DONE, P2 DONE (the window is correct and free), and the campaign's remaining arms are
+BLOCKED BY A CODE CONSTRAINT rather than by a measurement (2026-11-10, finding 7).  Still nothing in `patches/`.**
+This campaign exists because the previous one
+([`archive/work/apu-expert-pool/`](../../archive/work/apu-expert-pool/CONCLUSION.md)) disproved its own thesis.  Read
+the CONCLUSION first; this file assumes it.
+
+> ### P2 verdict (2026-11-10, evening — the full record: [`p0/RESULTS.md`](p0/RESULTS.md) §L)
+>
+> **7. The zero-copy window now WORKS and is free — and it cannot be PARTIAL, which is what ends the 122B arms.**
+> Two layout defects (not the file-offset arithmetic §K suspected) produced the wrong data, both invisible to a
+> bandwidth probe: the kernel indexes the cold stride in **type blocks**, so a pitch of `host_bytes + page`
+> truncated 64 B/slot and drifted linearly; and a pitch of `host_bytes` makes consecutive slots **share a page**,
+> which is coherent only when the next slot's expert is file-adjacent — never true for a heat ranking.  The pitch
+> is now the smallest multiple of `lcm(page, ggml_type_size)` that holds the expert plus its file-offset residue
+> (35B: 589824 -> 626688, +6.25 % of address space; 122B: 3342336 -> 3411968), registered **per slot**, with the
+> window **refused** (falling back to the copy pool) when a tensor's stride is not a page multiple.  Measured,
+> 35B `-ncmoe 40`, `-n 96 seed 42`: **377 chars `sha=ae39ec41bc1e`** — the reference text — at **59.2 t/s**, heat-ranked,
+> `fills=0 evictions=0`, **cold 99.61 %**, 18662 MiB pinned for **~0 MiB** of pinned RAM; a second prompt
+> (`prompts/code-reasoning-mixed.txt`) matches byte for byte (`sha=ff86b6990ce7`).  `p0/arms.sh window-pool`.
+> **But a window must cover every expert of every table it serves**: the cold-id space has exactly two levels (an
+> arena slot, or `n_res + cold index` at ONE stride), so a partial window makes every routed op unrepresentable
+> and the layer falls to the scheduler's host upload.  Measured at 88 GiB on the 122B: the window builds
+> (`206/256` slots/table, 94554 MiB, `fills=0`) and the run decodes at **0.9 t/s** with `9360 of 9360` remap offers
+> declined.  The complement cannot be covered by an arena either (23 GiB of copy beside an 88 GiB window, before
+> the 8.6 GiB of weights).  **So the 122B decode/prefill window arms are unreachable on this box by construction
+> — and so is the capacity rig's.**  One thing could lift it and is NOT built: an **unregistered** `MAP_SHARED`
+> file mapping is device-readable on this box at the same band as a registered read (4/4 runs, byte-exact), while
+> fresh **anonymous** pageable memory faults — i.e. the map+register step may itself be unnecessary.  What that
+> probe does not answer is what the GPU does when such a page is **reclaimed mid-kernel**, which is the whole
+> question for a >RAM working set (RESULTS §L.6).
 
 > ### P0 verdict (the full record, arms and censuses: [`p0/RESULTS.md`](p0/RESULTS.md))
 >
