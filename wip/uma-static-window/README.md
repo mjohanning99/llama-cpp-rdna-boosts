@@ -51,6 +51,15 @@ disproved its own thesis.  Read the CONCLUSION first; this file assumes it.
 > closing the campaign as a **negative with two kept results** (the launch-shape band, §A; and the reference
 > correction, §C/§F) -- the decision is the maintainer's, and nothing here is in `patches/`.
 >
+> **6. The 122B question, answered as a bound (`p0/RESULTS.md` §G).**  *Is there any path on which the campaign
+> beats stock for Qwen3.5-122B-A10B Q8_0 here?*  **No, and the bound is stricter than the campaign's own arms:**
+> `-ncmoe 24` already puts **57.4 GiB of the 114.8 GiB expert set on the device** (f = 0.5) where the GPU reads it at
+> 232 GB/s with **no copy, no registration, no fill, no eviction, no per-op remap** — a strict superset of what a
+> window offers — and it measures **8.5 t/s against 8.0 (+6 %)**.  The reason is that the 122B is 7.4 GiB larger
+> than this box, and pinning `f` takes `f` out of the page cache at the same time, so the share streaming from NVMe
+> **rises** with `f` (6.4 % -> 8.1 % -> 10.7 %).  A window changes *who reads*, never *how many bytes need reading*;
+> it pays only where reads, not capacity, are the limit — which for this model on this box they are not.
+>
 > **The stop rule is not triggered, but §3's arithmetic is.**  No measured arm overlapped the CPU part with
 > the GPU part, so the honest model is **additive**, and on a 123 GiB box the window size is bounded by what
 > can be **pinned** out of the same 123 GiB the page cache needs.  The 2–3x target on the 122B is **not

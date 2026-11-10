@@ -1,3 +1,30 @@
+## 261110.006 (wip) -- `uma-static-window`: the 122B is a **no**, provable as an upper bound (+6 %), because the shortfall is invariant to placement
+
+**Nothing in `patches/`.**  Answers the maintainer's question directly: *is there any path where the campaign runs
+Qwen3.5-122B-A10B Q8_0 faster than stock on this box?*  **No** -- and the bound is not the campaign's own arm, it is
+stricter than that.  Record: [`p0/RESULTS.md`](wip/uma-static-window/p0/RESULTS.md) §G.
+
+**The upper bound is already measured.**  `-ncmoe 24` puts **57.4 GiB of the 114.8 GiB expert set on the DEVICE**
+(f = 0.5), where the GPU reads it at 232 GB/s with **no copy, no registration, no fill, no eviction and no per-op
+remap** -- a strict superset of everything a static window claims, with none of its costs -- and it measures
+**8.5 t/s against the all-host arm's 8.0 (+6 %)**.  A pinned window can only be equal or worse: `p0/band.cpp` shows
+a registered window reads at exactly hipMalloc speed, so it adds a copy and a registration to the same bytes.
+
+**Why the bound is so low -- the memory shortfall is invariant to placement.**  The model is 123.4 GiB (114.8 +
+8.6) against ~116 GiB usable: **7.4 GiB short**.  Pinning `f` takes `f` out of the page cache at the same moment, so
+the complement's share streaming from NVMe *rises*: 6.4 % (f=0) -> 8.1 % (f=0.2) -> 10.7 % (f=0.4).  An additive
+model that assumed the CPU side kept its ~30 GB/s band would predict +37 % at f=0.4 (+51 % with a 231 GB/s window);
+that prediction is unavailable because the CPU band *is* its cache hit rate, and the window lowers it.
+
+**The rule:** on a box where device memory and host RAM are one pool, a window changes *who reads* the bytes and
+never *how many bytes need reading*.  It pays only where reads, not capacity, are the limit.  For the 122B on this
+box the capacity is the limit, so nothing placement-shaped helps; the levers that would are a smaller quantisation
+(fit under ~107 GiB of experts), more RAM, or faster storage for the 6-11 % that streams.
+
+**A yes would exist** where device memory is a separate pool (a window then *adds* capacity on top of RAM at ~13x the
+CPU's read band -- the shipped tier's reason to exist on discrete cards), or on a model whose expert set fits RAM but
+not the device share (`wip/moe-static-hot-tier`'s territory, and where §F put the campaign's home).
+
 ## 261110.005 (wip) -- `uma-static-window` P1: the shipped tier's win on the capacity rig is **capacity**, and a covering static window cannot be built there
 
 **Nothing in `patches/`; no default changed.**  Record: [`p0/RESULTS.md`](wip/uma-static-window/p0/RESULTS.md) §F,

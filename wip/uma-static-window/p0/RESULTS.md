@@ -352,3 +352,45 @@ not exist yet (a P2-sized change).
 
 The two results worth keeping regardless of the campaign's fate: **the window read is device-speed and its band is
 set by launch shape** (§A), and **the 122B/44.0 reference numbers had no arm behind them** (§C, §F).
+
+---
+
+# G. The 122B question, answered as a bound rather than a hope
+
+**Question (maintainer, 2026-11-10): is there *any* path on which the campaign runs Qwen3.5-122B-A10B Q8_0 faster
+than stock llama.cpp's default on this box?**
+
+**Answer: no — and the bound is not the campaign's own measurement, it is stricter than that.**  The decisive arm
+already exists: `-ncmoe 24` puts **57.4 GiB of the 114.8 GiB expert set on the device** (f = 0.5), where the GPU
+reads it at 232 GB/s **with no copy, no registration, no fill, no eviction and no per-op remap**.  That is a
+*strict superset* of what the campaign's window can offer — every benefit the window claims, none of its costs — and
+it measures **8.5 t/s against the all-host arm's 8.0 (+6 %)**.
+
+So **+6 % is an upper bound for the campaign on this model**, and a pinned window can only be equal or worse (it
+adds a copy and a registration to the same bytes, and `band.cpp` shows the registered window reads at exactly
+hipMalloc speed).
+
+**Why the bound is so low — the shortfall is invariant to placement.**  The 122B is 123.4 GiB (114.8 experts + 8.6
+non-expert) against ~116 GiB usable here: **7.4 GiB short**.  Pinning `f` of the experts takes `f` out of the page
+cache at the same time, so the *streaming share of the complement rises*, it does not fall:
+
+| f (pinned) | complement | page-cache room | share streaming from NVMe |
+|---|---|---|---|
+| 0.0 | 114.8 GiB | 107.4 GiB | 6.4 % |
+| 0.2 | 91.8 GiB | 84.4 GiB | 8.1 % |
+| 0.4 | 68.9 GiB | 61.5 GiB | 10.7 % |
+
+An additive model that *assumed* the CPU side kept its 30 GB/s band would predict +37 % at f = 0.4 and +51 % at
+f = 0.4 with a 231 GB/s window — the table above is why that prediction is unavailable: the CPU side's band comes
+from its cache hit rate, and the window lowers it.  The measured +6 % at f = 0.5 is what remains.
+
+**The general rule this produces:** on a box where device memory and host RAM are **one pool**, a window changes
+*who reads* the bytes and never *how many bytes need reading*.  It therefore only pays where the reads — not the
+capacity — are the limit.  For the 122B on this box the capacity is the limit, so nothing placement-shaped can help.
+The levers that would actually move it are a smaller quantisation (fit under ~107 GiB of experts), more RAM, or
+faster storage for the 6-11 % that streams — not a window.
+
+**Where a yes would exist:** a box where device memory is a *separate* pool, so a window adds capacity on top of
+RAM and reads it ~13x faster than the CPU (the shipped tier's whole reason for existing on discrete cards), or a
+smaller model where the expert set fits RAM but not the device share (`wip/moe-static-hot-tier`'s territory, and
+the reason the campaign's home moved to the capacity rig in §F).

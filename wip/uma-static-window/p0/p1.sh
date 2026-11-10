@@ -33,6 +33,14 @@ case "$ARM" in
   cpu-path) ENVV=(MOE_EXPERT_CACHE_MIB=0);                                LME=24 ;;
   tier47)   ENVV=(MOE_HOST_POOL_SINK=1 MOE_HOST_POOL_RAM_PCT=0);          LME=47 ;;
   tier21)   ENVV=(MOE_HOST_POOL_SINK=1 MOE_HOST_POOL_RAM_PCT=0);          LME=21 ;;
+  tier21-nosink) ENVV=(MOE_HOST_POOL_SINK=0 MOE_HOST_POOL_RAM_PCT=0);     LME=21 ;;
+  # the COPY-COST isolation arm: same tier bytes, but the admission holds a resident unless the incoming
+  # has demonstrated more demand (ADMIT=1), which should collapse the fill count without moving residency
+  # much.  If t/s rises with the fills, the copy work is on the critical path (the campaign's thesis); if it
+  # is flat, it is not.
+  tier21-admit1) ENVV=(MOE_HOST_POOL_SINK=0 MOE_HOST_POOL_RAM_PCT=0 MOE_EXPERT_CACHE_ADMIT=1); LME=21 ;;
+  tier21-nofill) ENVV=(MOE_HOST_POOL_SINK=0 MOE_HOST_POOL_RAM_PCT=0 MOE_HOST_POOL_DIO=0
+                        MOE_EXPERT_CACHE_ADMIT=1);                      LME=21 ;;
   window47) ENVV=("${COVER[@]}" MOE_HOST_POOL_RO=1 MOE_EXPERT_CACHE_MIB=32768
                   GGML_CUDA_SLAB_RESERVE_MIB=1024 MOE_EXPERT_CACHE_SLOTS=1 MOE_EXPERT_CACHE_TOUCH=1000000)
             LME=47 ;;
