@@ -164,3 +164,112 @@ cd ~/llama-cpp-rdna-boosts/wip/uma-static-window/p0
 ./arms.sh ref-device 96 ; ./arms.sh cpu-path 96 ; ./arms.sh cold100-strict 96
 ./arms.sh window5 96 && ./arms.sh window25 96 && ./arms.sh window50 96 && ./arms.sh window75 96
 ```
+
+---
+
+# Addendum (same day): the band probe, long generations, and the 122B
+
+Three follow-ups the maintainer asked for.  Two of them change the campaign's *target case*.
+
+## A. The window's effective bandwidth — `band.cpp`
+
+The question (§9.4 above): what does a GPU pull from a registered window when the reads look like a routed
+MoE decode — a handful of random per-expert blocks per op — rather than a 1 GiB sequential sum?
+
+`hipcc -O2 --offload-arch=gfx1151 -o band band.cpp`, 8 GiB footprint, random expert per row, one kernel
+launch per "op" (one block per routed row, `__ldg` loads, median of 40 after a warm-up).  `dev` = `hipMalloc`
+(the GTT buffer the arena is carved from); `anon-ro` = anonymous mmap filled **then** registered
+`Mapped|ReadOnly` (the design's window).
+
+**Expert 610 352 B (the 35B's Q4_K_M), GB/s:**
+
+| reads per op | one launch, `dev` | one launch, `anon-ro` | 8-block launches, `dev` | 8-block launches, `anon-ro` |
+|---|---|---|---|---|
+| 8 | 93.8 | **93.0** | 95.4 | 93.0 |
+| 32 | 204.8 | **204.5** | 100.2 | 98.2 |
+| 128 | 228.0 | **227.4** | 99.9 | 99.5 |
+| 320 | 232.1 | **231.0** | 99.5 | 100.0 |
+
+**Expert 3 300 000 B (the 122B's Q8_0), GB/s:** 8 rows 103.4 / **101.4**; 32 rows 223.9 / **223.4**;
+128 rows 235.3 / **234.8** (one launch; 8-block launches stay at 101–103).
+
+**Block size is the per-launch lever** (anon-ro, 610 352 B): 8 rows × 256 thr = 95.5, × 512 = 142.6,
+× 1024 = **176.7**; 16 rows × 1024 = 206.9; 32 rows × 256 = 204.4.
+
+Three facts, and they are what the per-token arithmetic needed:
+
+1. **A registered read-only window reads at device-memory speed.**  231.0 GB/s against `hipMalloc`'s 232.1 at
+   320 rows, 227.4 vs 228.0 at 128 — **identical at every shape measured**.  On a UMA APU a window is not a
+   slower tier than the device; it is the same DRAM with an extra copy in front of it.
+2. **The band is set by the launch shape, not the backing.**  Eight routed rows per launch top out at
+   **~95-103 GB/s**; ≥32 rows reach 205–232.  A batch-1 decode issues one op per layer with 8 rows, so **the
+   per-layer cold read runs at ~100 GB/s, not 232** — and a 1024-thread block lifts even that to 177.
+3. **The read-only registration flag is irrelevant to the read** (probe `03`'s 60 GB/s writable arm did not
+   reproduce: 230.3 GB/s here).  The old 60-vs-233 GB/s split is a property of that probe's load pattern, not
+   of the registration — which is exactly why `cold100-strict` and `cold100-strict-wr` tie (60.1 vs 59.9).
+
+## B. Long generations — does the hot set establishing itself show up?
+
+Same arm at `-n 96` and `-n 512`; the **marginal** rate over tokens (96, 512] is the steady state.
+
+| arm | n=96 | n=512 | marginal | gain |
+|---|---|---|---|---|
+| `ref-device` | 62.9 | 63.1 | 63.2 | +0.5 % |
+| `cpu-path` | 35.0 | 35.2 | 35.2 | +0.6 % |
+| `cold100-strict` | 59.9 | 60.0 | 60.0 | +0.2 % |
+| `window25` | 55.5 | 56.2 | **56.4** | **+1.6 %** |
+| `window50` | 58.0 | 58.4 | **58.5** | **+0.9 %** |
+| `window75` | 59.5 | 59.5 | 59.5 | 0 % |
+| `window25`, **no prior** (`MOE_EXPERT_HEATMAP=0`) | 54.9 | 55.8 | **56.0** | **+2.0 %** |
+| `window50`, **no prior** | 52.8 | 54.6 | **55.0** | **+4.2 %** |
+
+**The hypothesis is right in direction and small in size.**  A cold start (no persisted prior) gains +2.0 % /
++4.2 % of decode between the first 96 and the next 416 tokens — real, monotone and larger at the smaller
+window.  But it never catches the **seeded** arm: `window50` cold starts at 52.8 and converges to 55.0, while
+the persisted prior puts the same arm at **58.0** from token 1.  That is the campaign's static-window premise
+measured directly: **the persisted heat prior is worth ~+6 % at 96 tokens, more than the whole in-run
+convergence**, and it is already implemented (`apply_heat_seed_locked` seeds the arena from the prior at
+sizing).  The long-run effect does not change the ranking or close any gap.
+
+## C. The 122B — and why this box is the wrong target case
+
+On this box `hipMalloc` is GTT — **the same DRAM as host RAM at the same speed** (§A.1).  So "pin a window of
+the hottest experts" and "put those experts on the device" are the *same memory at the same speed*, and the
+second needs no copy.  The only thing that varies is **capacity**, and Qwen3.5-122B-A10B Q8_0 is 123.4 GiB
+against ~116 GiB of usable memory here: the model is bigger than the box.
+
+Measured (`-c 8192`, cache off, `--host-experts pool -lm mmap`, marginal over tokens 64..320 so the page
+cache state is amortised):
+
+| arm | device model | host model | steady-state decode |
+|---|---|---|---|
+| `-ncmoe 48` (all experts host) | 5.5 GiB | 118.3 GiB | **8.0 t/s** |
+| `-ncmoe 24` (57.4 GiB of experts **on the device**) | 63.0 GiB | 59.5 GiB | **8.5 t/s** |
+
+Moving 57 GiB of expert bytes onto the GPU is worth **+7 %, i.e. nothing**, because every non-reclaimable
+device byte displaces exactly one page-cache byte of the part that stays host-resident — and then the CPU
+part streams from NVMe.  (The whole-run numbers swing 4.2–9.6 t/s *between* arms purely on page-cache state,
+which is why only the marginal rate is quoted.  Neither configuration reaches the recorded 10.58–10.90, which
+was taken on a fully warm page cache.)
+
+**The 122B's 10.9 t/s is a capacity wall, not a reader-band wall.**  3.8 GiB/token at the CPU's 41 GB/s is
+93 ms = 10.8 t/s — the CPU is already at the only rate the bytes' *residency* allows, and the bytes cannot be
+moved closer to the GPU because there is nowhere to move them: on UMA the device pool and the page cache are
+one resource.
+
+## D. Where that leaves the campaign
+
+The design is not refuted — the transport is free (§ above) and the static prior beats in-run convergence
+(§B) — but its **home is the capacity-constrained case, not the >RAM one**:
+
+* a model that **fits in RAM but not in the device share** (or a box where the two are separate), where
+  pinning a window takes bytes *out of the page cache* only in the sense of making them non-reclaimable, and
+  the win is the reader (231 GB/s against the CPU's 41);
+* which on this box is exactly the **56 GiB ballast rig** (`wip/bench-56gb/`), where the copy tier already
+  measures IQ4_NL at **44.0 t/s against the CPU path's 31.0 (+42 %)** — a configuration the campaign can
+  reproduce and, if the static window is worth anything, beat (no per-miss copy, no eviction, no per-op
+  remap), while the >RAM 122B has no slack to give.
+
+**Next (P1):** the ballast rig, IQ4_NL, static-window arm vs the copy tier vs the CPU path — plus the
+launch-shape lever from §A.2 (a 1024-thread routed block is worth 177 vs 95 GB/s at 8 rows, which is free
+bandwidth for whoever owns that kernel).

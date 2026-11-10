@@ -1,0 +1,13 @@
+[Start thinking]
+
+Here's a thinking process:
+
+1.  **Analyze User Input:** The user asks "The capital of France is" - this is a straightforward factual question.
+2.  **Identify Key Entity:** France (country)
+3.  **Retrieve Knowledge:** What is the capital of France? Paris.
+4.  **Formulate Response:** Keep it concise and direct. "Paris." or "The capital of France is Paris."
+5.  **Verify Accuracy:** Confirmed. Paris has been the capital of France for centuries.
+6.  **Output Generation:** Provide the answer clearly.✅
+[End thinking]
+
+The capital of France is **Paris**.

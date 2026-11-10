@@ -1,3 +1,43 @@
+## 261110.003 (wip) -- `uma-static-window` P0 addendum: the window reads at **device speed** (231 vs 232 GB/s), the band is set by launch shape, and the 122B is a **capacity** wall, not a band one
+
+**Nothing in `patches/`; no default changed.**  Follows `261110.002`; the record is
+[`wip/uma-static-window/p0/RESULTS.md`](wip/uma-static-window/p0/RESULTS.md) §A-§C, the probe is
+[`p0/band.cpp`](wip/uma-static-window/p0/band.cpp), the rig for the long arms is
+[`p0/long.sh`](wip/uma-static-window/p0/long.sh) and the 122B's is [`p0/arms122.sh`](wip/uma-static-window/p0/arms122.sh).
+
+**A -- the window's band (`band.cpp`, 8 GiB, random expert per routed row, one launch per op).**  A registered
+**read-only** anonymous window measures **231.0 GB/s against `hipMalloc`'s 232.1** at 320 rows (227.4 vs 228.0 at
+128, 204.5 vs 204.8 at 32) -- **identical at every shape**, so on a UMA APU a window is *device memory plus a copy*,
+not a slower tier and not a faster one.  The band is set by the **launch shape**: 8 routed rows per launch =
+**93-103 GB/s**, >=32 rows = 205-232 (3.3 MiB experts give the same shape, 101 vs 224-235).  Block size is the
+per-launch lever: 8 rows x 256 threads = 95.5, x 512 = 142.6, **x 1024 = 176.7**.  The read-only flag is **inert to
+the read** (the probe's old 60 GB/s writable arm did not reproduce: 230.3 here), which is why `cold100-strict` and
+its writable twin tie.
+
+**B -- long generations.**  Marginal rate over tokens 96..512 vs the first 96, per arm: `ref-device` +0.5 %,
+`cpu-path` +0.6 %, `cold100-strict` +0.2 %, `window25` **+1.6 %**, `window50` +0.9 %, `window75` 0 %.  With the
+persisted prior **disabled** (`MOE_EXPERT_HEATMAP=0`, a cold start) the same arms gain **+2.0 %** (`window25`) and
+**+4.2 %** (`window50`) -- but never catch the seeded arm: `window50` runs 52.8 -> 55.0 cold against **58.0 -> 58.4**
+seeded.  So "the hot set establishing itself" is real, is worth 2-4 points, and is **already captured** by
+`apply_heat_seed_locked` (the persisted prior at sizing, i.e. the campaign's static window) which is worth ~**+6 % at
+token 1**.
+
+**C -- the 122B, and the target case.**  Qwen3.5-122B-A10B Q8_0 is 123.4 GiB against ~116 GiB usable: the model is
+bigger than the box.  `-c 8192`, cache off, marginal over tokens 64..320: **`-ncmoe 48`** (all host, device model
+5.5 GiB / host 118.3 GiB) **8.0 t/s**; **`-ncmoe 24`** (57.4 GiB of experts **on the device**, device 63.0 / host
+59.5) **8.5 t/s** -- i.e. moving 57 GiB toward the GPU is worth +7 %, nothing, because every non-reclaimable device
+byte displaces exactly one page-cache byte of the host-resident part, which then streams from NVMe.  (Whole-run
+numbers swing 4.2-9.6 t/s between arms on page-cache state alone, so only the marginal rate is quoted; neither
+reaches the recorded 10.58-10.90, taken on a fully warm cache.)  The 122B's rate is a **capacity** wall: 3.8 GiB/token
+at the CPU's 41 GB/s is 93 ms = 10.8 t/s, and the bytes cannot be moved closer to the GPU because on UMA the device
+pool and the page cache are one resource.
+
+**What it changes.**  The design is not refuted -- the transport is free and the static prior beats in-run
+convergence -- but its **home is the capacity-constrained case**, not the >RAM one: a model that fits RAM but not the
+device share.  On this box that is the **56 GiB ballast rig** (`wip/bench-56gb/`, where the *copy* tier already
+measures IQ4_NL at **44.0 t/s against the CPU path's 31.0, +42 %**), so **P1 starts there**: static window vs copy
+tier vs CPU path.  The README's P2 acceptance criterion ("122B > 10.9 t/s") is replaced -- it is unreachable here.
+
 ## 261110.002 (wip) -- `uma-static-window` P0: the in-place read is FREE (+71 % over the CPU path), the split granularity is the TABLE, and P0.2's arithmetic was the wrong row
 
 **Nothing in `patches/`; `release.json` untouched; no default changed.**  P0 is the campaign's decision step

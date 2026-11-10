@@ -1,0 +1,7 @@
+[Start thinking]
+
+Thinking Process:
+
+1.  **Analyze the Request:** The user is asking for the capital of France. This is a straightforward factual question.
+
+2.  **Retrieve Knowledge:** Access general knowledge about geography and countries.

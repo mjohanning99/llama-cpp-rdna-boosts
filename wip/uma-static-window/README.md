@@ -24,6 +24,21 @@ disproved its own thesis.  Read the CONCLUSION first; this file assumes it.
 > byte-identical to the all-device arm.  Publishing the map once is an **optimisation, not a requirement**:
 > the per-op remap costs ≤ 1 %.
 >
+> **4. Addendum (same day, `p0/RESULTS.md` §A-C): the window and the device are the same memory at the same
+> speed.**  `p0/band.cpp` measures a registered read-only window at **231.0 GB/s against `hipMalloc`'s
+> 232.1** at 320 routed rows, 227.4 vs 228.0 at 128 — identical at every shape — and shows the band is set
+> by the **launch shape**, not the backing (8 routed rows/launch = **95-103 GB/s**, >=32 rows = 205-232; a
+> 1024-thread block lifts 8 rows to 177).  The read-only flag itself is inert to the read (that is why
+> `cold100-strict` and its writable twin tie).  On this box a window is therefore *device memory plus a
+> copy*, and the only thing that varies is capacity — which the 122B does not have: `-ncmoe 24` (57.4 GiB
+> of experts on the device) measures **8.5 t/s steady state against `-ncmoe 48`'s 8.0**, i.e. nothing, and
+> its recorded 10.9 is a **capacity** wall (3.8 GiB/token at the CPU's 41 GB/s).  Long generations confirm
+> the static premise but small: a cold start gains **+2.0/+4.2 %** between the first 96 and the next 416
+> tokens, while the **persisted prior is worth ~+6 % at token 1** (`window50` 58.0 seeded vs 52.8 cold).
+> **So the campaign's home is the capacity-constrained case — the 56 GiB ballast rig, where the copy tier
+> already measures 44.0 vs the CPU path's 31.0 (+42 %) — not a >RAM model on a 123 GiB box, which has no
+> slack to give.**  P1 target: beat the copy tier there with the static window.
+>
 > **The stop rule is not triggered, but §3's arithmetic is.**  No measured arm overlapped the CPU part with
 > the GPU part, so the honest model is **additive**, and on a 123 GiB box the window size is bounded by what
 > can be **pinned** out of the same 123 GiB the page cache needs.  The 2–3x target on the 122B is **not
@@ -125,8 +140,9 @@ and write the negative result — that is a successful campaign outcome, and che
 
 | step | what | accept |
 |---|---|---|
+| **P1 (first)** | **the ballast rig** (`wip/bench-56gb/`, IQ4_NL, 31 GiB ballast): static window vs the copy tier vs the CPU path — the only configuration on this box with slack for a window (copy tier 44.0, CPU path 31.0) | the window is ≥ the copy tier (44.0 t/s) with no per-miss copy and no evictions; text byte-identical; the same window sizing must not regress the discrete box |
 | P1 | window sizing and selection: `-lme N` GiB, heat-prior ranking, fill-then-register, one WARN line declaring heat-map mode and the window size | the window is exactly N GiB, registered RO, and the census reports its coverage |
-| P2 | static remap published at load; the window's tables route to it with no per-op readback | 122B decode **> 10.9 t/s**; no `takeover` per token in the census |
+| P2 | static remap published at load; the window's tables route to it with no per-op readback | **the ballast rig's tier arm > 44.0 t/s** (the 122B is a capacity wall — the old "> 10.9 t/s" criterion is unreachable here, P0 addendum §C); no `takeover` per token in the census |
 | P2b | **all-or-nothing per table**: window sizing must never leave a host table without an arena/window slot, and the census must assert `tables == n_host_tables` (P0: losing 20 % of the tables costs the whole win) | no arm with a partial table set; a `tables` shortfall is a hard failure, not a WARN |
 | P3 | the complement: **GPU-served in place** where it can be pinned, CPU only where it cannot, and the table is the granularity (the P0.2 answer) | the split is visible in the census and the sum of both paths is the measured throughput (additive — do not budget for overlap) |
 | P4 | policy: fits → no tier (advisory); does not fit → heat-map mode declared; `-ncmoe` no-op WARN; kill switches | `ENVIRONMENT.md` rows, defaults per the default-on policy, no change on a discrete box |
@@ -145,8 +161,9 @@ campaign changes an accessor and a policy, not the op plumbing.
 
 - **Text identity**: same-seed greedy text with **no `-lv`**, on `llama-cli`, against the best fitting arm; the
   arm's own `-lv 4` census is a **separate run**.
-- **The rig**: the 31 GiB-ballast 56 GiB-emulation (`wip/bench-56gb/`, `ballast.c` mlock 31 GiB) for the
-  fits-vs-does-not-fit boundary; the 122B (`/llm/models/Qwen3.5/122B-A10B/Q8_0/`, 123.4 GiB, **no MTP drafter**) as
+- **The rig**: the 31 GiB-ballast 56 GiB-emulation (`wip/bench-56gb/`, `ballast.c` mlock 31 GiB) is the
+  campaign's **primary** rig after P0 (§P0 4): it is the only configuration on this box with slack for a window
+  (IQ4_NL, copy tier 44.0 vs CPU path 31.0).  The 122B (`/llm/models/Qwen3.5/122B-A10B/Q8_0/`, 123.4 GiB, **no MTP drafter**) as
   the >RAM stress model; IQ4_NL (87 GiB, A3B, MTP drafter) as the control that must not regress (**44.0 t/s** with
   the old arena tier is the number to beat or match).
 - **`check-gpu-faults.sh`** on every arm, plus the kernel journal.
@@ -197,12 +214,13 @@ it — not from the retired experiment.
    the persisted prior) or must it be fixed for the life of the process?  (Fixed is simpler and is the assumption
    above.)
 3. Does the discrete path keep the arena **and** the pool as shipped (assumed yes — nothing here touches it)?
-4. **NEW (P0, and the one number the whole per-token arithmetic rests on): what is the GPU's effective
-   bandwidth on the *real* expert access pattern** — 8 random ~0.6 MiB reads per routed op out of
-   an 18 GiB read-only-registered window?  The probe's 198–233 GB/s is a *sequential 1 GiB sum*; the
-   35B's decode measures 46 GB/s effective but is latency-bound, so it cannot separate 46 from 230.  Two
-   ways to close it: an ~80-line HIP probe of that access pattern, or the 122B arm itself.  Every window
-   size in §3's table is a guess until this is measured.
+4. **ANSWERED (P0 addendum §A): the window's effective bandwidth, per launch shape.**  A registered
+   read-only window measures **231.0 GB/s against `hipMalloc`'s 232.1** (identical at 8/32/128/320 rows), and
+   the band is set by the **launch shape**: 8 routed rows per launch = 95–103 GB/s (177 with a 1024-thread
+   block), ≥32 rows = 205–232.  So use **~100 GB/s for a per-layer decode op** in §3's table, not 194, and
+   treat the rows-per-launch × block-size product as a P1 lever.  `p0/RESULTS.md` §A has the table.
+   What is still open is **capacity on the target box**, not bandwidth: see §P0 4 — the 122B has no slack,
+   so the campaign's home is the capacity-constrained rig.
 5. **NEW (P0): is a window that is *not* a copy cheaper?**  Registering a `/llm/models` file mapping
    read-only measured 230.5 GB/s too (`archive/work/apu-expert-pool/MEASUREMENTS.md` §3), and the pages are
    already in the page cache and shared with the CPU path — i.e. a *zero-copy* window, with no anonymous

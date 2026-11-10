@@ -1,0 +1,20 @@
+=== ref-device / text ===
+rc=0  log=/home/stew675/llama-cpp-rdna-boosts/wip/uma-static-window/p0/results/261110-094624-ref-device/text.log
+[ Prompt: 138.4 t/s | Generation: 62.9 t/s ]
+hash: 377 chars sha=ae39ec41bc1e
+=== ref-device / census ===
+rc=0  log=/home/stew675/llama-cpp-rdna-boosts/wip/uma-static-window/p0/results/261110-094624-ref-device/census.log
+[ Prompt: 138.4 t/s | Generation: 63.0 t/s ]
+
+--- census keys ---
+0.00.317.531 I print_info: pooling type          = -1
+0.00.317.568 I load_tensors: keeping mmap on a shared-pool iGPU: a host-expert placement needs the model mapping as its pool-backed master (MOE_UMA_MMAP=0 restores the iGPU mmap exclusion)
+0.00.317.608 I set_host_experts_umem: this device's memory is a SHARED host/device pool (an integrated GPU); a `pool` host-expert placement is allowed: the masters stay in the read-only model mapping and every GPU read is served through the bounded pinned pool (MOE_HOST_EXPERTS_UMA=0 restores the refusal)
+0.02.151.562 I cmn          init: llama threadpool init, n_threads = 12
+0.04.305.497 I report_locked: MoE expert cache: h=0.0000 (0/0 reaches), fills=0 evictions=0, tables=0, slots=0, arena=0.0 MiB total (budget auto MiB/device)
+0.04.305.502 W report_locked: sink (MOE_HOST_POOL_SINK): 0 demoted, 0.0 MiB | declined: 0 no-free-slot, 0 geometry (structural), 0 copy-error | 0 promoter slots retired (spare=4)
+0.04.305.506 I report_locked: takeover=0 decline_all=0 get_ok=0 cold=uva cold_reaches=0
+0.04.305.507 I report_locked: cold admission=touch, admission-rejected (served cold)=0
+0.04.305.511 I report_locked: VRAM budget: requested=auto MiB/device, free-clamped=0, arena alloc failures=0 (fail-soft)
+
+dir=/home/stew675/llama-cpp-rdna-boosts/wip/uma-static-window/p0/results/261110-094624-ref-device

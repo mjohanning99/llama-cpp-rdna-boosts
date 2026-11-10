@@ -1,0 +1,7 @@
+[Start thinking]
+
+Thinking Process:
+
+1.  **Identify the core question:** The user is asking for the capital of France.
+2.  **Retrieve knowledge:** Access general knowledge about geography and countries.
+3.  **Verify the fact

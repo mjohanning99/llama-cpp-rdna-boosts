@@ -1,0 +1,20 @@
+=== cpu-path / text ===
+rc=0  log=/home/stew675/llama-cpp-rdna-boosts/wip/uma-static-window/p0/results/261110-094651-cpu-path/text.log
+[ Prompt: 73.2 t/s | Generation: 35.2 t/s ]
+hash: 570 chars sha=0cf4a62aa63f
+=== cpu-path / census ===
+rc=0  log=/home/stew675/llama-cpp-rdna-boosts/wip/uma-static-window/p0/results/261110-094651-cpu-path/census.log
+[ Prompt: 71.7 t/s | Generation: 35.8 t/s ]
+
+--- census keys ---
++ env -- MOE_EXPERT_CACHE_MIB=0 /home/stew675/llama.cpp/build-wip/bin/llama-cli -m /llm/models/Qwen3.6/35B-A3B/Q4_K_M/Qwen3.6-35B-A3B-Q4_K_M.gguf -ngl 99 -c 4096 -p 'The capital of France is' -n 512 --seed 42 --temp 0 --single-turn --no-display-prompt -t 12 -ncmoe 40 --host-experts pool -lm mmap -lv 4
+0.00.255.148 W common_params_fit_impl: host-resident MoE experts on a shared host/device memory pool (integrated GPU): the expert cache is not used there, so no slab headroom or arena is reserved in the --fit margin.  Re-enabling it where the platform really partitions host/device memory needs MOE_EXPERT_CACHE_UNIFIED=1 plus an explicit MOE_EXPERT_CACHE_MIB and GGML_CUDA_SLAB_RESERVE_MIB.
+0.00.370.743 I print_info: pooling type          = -1
+0.00.370.810 I set_host_experts_umem: this device's memory is a SHARED host/device pool (an integrated GPU); a `pool` host-expert placement is allowed: the masters stay in the read-only model mapping and every GPU read is served through the bounded pinned pool (MOE_HOST_EXPERTS_UMA=0 restores the refusal)
+0.00.370.990 W plan_host_expert_placement: this model (21603.0 MiB) FITS in this APU's usable device memory (~88419.7 MiB = 75% of MemAvailable): host-resident MoE experts (`-ncmoe`/`-cmoe`/`-lme`, `--host-experts pool`) gain nothing here and cost decode bandwidth, because on a shared host/device pool the experts would already be device-resident.  `-ncmoe 0` is almost certainly faster on this box.  Honouring the request anyway.
+0.00.371.029 I moe_cache_set_host_pool: host pool enabled: the loader's explicit budget (-lme N)
+0.00.371.034 I plan_host_expert_placement: host experts: auto -> a pinned per-EXPERT pool of 18662.0 MiB of 18662.0 MiB: the whole host expert set (a MIRROR)
+-\0.00.678.002 W report_host_expert_placement: host experts: pinned 0.0 MiB of 18662.0 MiB (cap 18662.0 MiB), pageable 18662.0 MiB, 120/120 pool sources registered; auto -> a pinned per-EXPERT pool of 18662.0 MiB of 18662.0 MiB: the whole host expert set (a MIRROR)
+0.00.701.412 I cmn          init: llama threadpool init, n_threads = 12
+
+dir=/home/stew675/llama-cpp-rdna-boosts/wip/uma-static-window/p0/results/261110-094651-cpu-path
