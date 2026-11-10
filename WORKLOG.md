@@ -1,3 +1,25 @@
+## 261110.009 (wip) -- `uma-static-window`: the prefill baseline is **175.2 t/s** at 4059 tokens / `-ub 4096`, and 43 % of it is the fill memcpy
+
+**Nothing in `patches/`.**  The maintainer's question: with a 4096-token prompt and `-ub 4096`, what is the current
+prompt read rate, against a ~700 t/s I/O bound computed from "25 % of the weights at 6 GiB/s"?  Measured (122B Q8_0,
+`-ncmoe 48 --host-experts pool -lm mmap`, cache armed, default pool ceiling):
+**4059 tokens in 23.17 s = 175.2 t/s**.  Record: [`p0/RESULTS.md`](wip/uma-static-window/p0/RESULTS.md) §J.
+
+The census splits it: **`10650 mapping memcpys, 9980 ms, 33.15 GiB at 3772 MiB/s`** -- 9.98 s (43 %) is the fill
+memcpy path -- and 13.2 s is everything else (~1.9 TFLOPS effective for 4059 x ~3 B active params).  So the model's
+two assumptions are both off: the transport is a **3.77 GiB/s CPU memcpy, not a 6 GiB/s disk read**, and the volume
+was **29 % of the set, not 25 %** (the pool was clamped to 11.9 GiB by this branch's 10 %-of-MemAvailable UMA
+ceiling; arena h = 0.488).
+
+Projection: a zero-copy window (the same 33 GiB read in place at ~200 GB/s per the §I.1 probe) -> 23.17 - 9.98 + 0.2
+= **~13.4 s -> ~300 t/s**, and re-sized residency then cuts the volume too.  The ~13 s of compute is the floor here,
+so a 700 t/s-class prefill would need ~8.6 TFLOPS effective and is not reachable on this APU regardless of I/O.
+
+**Harness note (my error, recorded):** a follow-up arm used `MOE_HOST_POOL_RAM_PCT=90` on top of the 32 GiB budget,
+which lets the pool pin ~96 GiB -- the swap case §H.2 already measured as fatal (22 GiB swap, 0.8 t/s).  It paged the
+box and was killed.  The 175 t/s arm used the default ceiling; any arm that raises the pool ceiling here is a
+swap-containment test, not a throughput arm.
+
 ## 261110.008 (wip) -- `uma-static-window` P2 step 1: the ZERO-COPY window works (24 GiB, no copy, 234 GB/s) -- and the 122B prefill does not stall for the reason anyone thought
 
 **Nothing in `patches/`.**  P2's technical risk was one question: can a read-only, expert-indexed, GPU-readable

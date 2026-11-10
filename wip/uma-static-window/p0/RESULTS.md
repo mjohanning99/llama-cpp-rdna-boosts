@@ -509,3 +509,37 @@ staging reduction that the "25 % of the weights per ubatch pass" model predicts 
 does not stage 100 % today.  What the window changes is *where the 75 % is read from*: in place at 199-234 GB/s
 instead of by the CPU at ~6 GB/s.  That is the lever to measure, and it needs the clean cache-off/warm-cache arm
 first.
+
+---
+
+# J. The prefill baseline the maintainer asked for: 4059 tokens, `-ub 4096` -> **175.2 t/s**, and 43 % of it is the fill memcpy
+
+122B Q8_0, `-ncmoe 48 --host-experts pool -lm mmap`, `-c 8192 -b 4096 -ub 4096`, 4059-token prompt, `-n 1`,
+cache armed (`MOE_EXPERT_CACHE_MIB=32768`, **default** pool ceiling): **prompt eval 23.17 s = 175.2 t/s**
+(run `results/261110-114837-122b-prefill-4096-ub4096`).
+
+**Where the 23.17 s went** (census, same run):
+
+| component | measured |
+|---|---|
+| fill memcpy path | `pool fills: 10650 mapping memcpys, 9980 ms, 33.15 GiB (3.2 MiB/fill, **3772 MiB/s**)` |
+| everything else | 13.2 s ≈ **1.9 TFLOPS effective** (4059 tokens x ~3 B active params) |
+
+Two things this corrects in the "25 % of the weights per ubatch at 6 GiB/s" model:
+
+1. **The transport is a 3.77 GiB/s CPU memcpy, not a 6 GiB/s disk read** — the fills come from the pageable
+   mapping into pinned memory.  The zero-copy window replaces exactly that: the same bytes read in place at
+   199-234 GB/s (probe, §I.1).
+2. **The volume was 33.15 GiB, i.e. 29 % of the set, not 25 %** — and that is *with* a pool clamped to
+   **11.9 GiB** by this branch's default UMA ceiling (`MOE_HOST_POOL_RAM_PCT` = 10 % of MemAvailable).  Arena
+   h = 0.488.  A deliberately sized residency both cuts the volume and, with a zero-copy window, cuts the rate.
+
+**Projection, in the order the design delivers it:** window (33 GiB at ~200 GB/s instead of 3.77) -> 23.17 - 9.98 +
+0.2 ≈ **13.4 s -> ~300 t/s**; then sized residency (75 %, fill volume 33 -> ~8 GiB) takes several more seconds.  The
+floor is the ~13 s of compute (~1.9 TFLOPS effective), so a 700 t/s-class number needs ~8.6 TFLOPS and is not
+reachable on this APU regardless of I/O.
+
+**Harness note (my error, recorded so it is not repeated):** the follow-up arm that paged the box used
+`MOE_HOST_POOL_RAM_PCT=90` on top of the 32 GiB budget, which lets the pool pin ~96 GiB — the same swap case §H.2
+already measured as fatal (22 GiB of swap, 0.8 t/s).  The 175 t/s arm above used the **default** ceiling.  Any arm
+that raises the pool ceiling on this box must be treated as a swap-containment test, not a throughput arm.
