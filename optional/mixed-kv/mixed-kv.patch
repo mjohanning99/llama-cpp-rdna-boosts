@@ -1,26 +1,28 @@
-From 5d25f70db3756fe9ec660ea21bd8fc3456cf1454 Mon Sep 17 00:00:00 2001
+From b9ef21140ec34fc5819f766ca03736c1943ae61e Mon Sep 17 00:00:00 2001
 From: Marvin Johanning <email@marvinjohanning.de>
-Date: Fri, 13 Nov 2026 21:32:17 +0100
+Date: Sat, 14 Nov 2026 16:30:09 +0100
 Subject: [PATCH] ggml-cuda, llama: native mixed K/V cache types (q8_0 K with
  q4_0 / q5_0 / q5_1 V)
 
 The tile flash-attention kernel takes a separate V type, with instances for head 256.
 The RDNA4 decode/verify band and the context gate accept the three pairs on models whose
-attention heads are all 256 wide. GGML_CUDA_FA_KV_MIXED=0 keeps the staged path.
+attention heads are all 256 wide and that do not use the sparse (QSA) attention, whose op
+requires K->type == V->type. The allocator and the tile instantiation take the V type from
+the same function (ggml_cuda_fattn_tile_type_V). GGML_CUDA_FA_KV_MIXED=0 keeps the staged path.
 test-logits-width-probe takes KVV=<type> for the V cache.
 ---
  ggml/src/ggml-cuda/fattn-rdna.cuh             | 34 +++++++-
- ggml/src/ggml-cuda/fattn-tile.cu              | 21 +++++
+ ggml/src/ggml-cuda/fattn-tile.cu              | 24 ++++++
  ggml/src/ggml-cuda/fattn-tile.cuh             | 83 +++++++++++--------
  ggml/src/ggml-cuda/fattn.cu                   |  2 +-
  ...tn-tile-instance-dkq256-dv256-q8_0-q4_0.cu |  5 ++
  ...tn-tile-instance-dkq256-dv256-q8_0-q5_0.cu |  5 ++
  ...tn-tile-instance-dkq256-dv256-q8_0-q5_1.cu |  5 ++
  .../template-instances/generate_cu_files.py   | 12 +++
- src/llama-context.cpp                         | 17 +++-
+ src/llama-context.cpp                         | 23 ++++-
  tests/test-backend-ops.cpp                    |  9 ++
  tests/test-logits-width-probe.cpp             | 11 +--
- 11 files changed, 162 insertions(+), 42 deletions(-)
+ 11 files changed, 171 insertions(+), 42 deletions(-)
  create mode 100644 ggml/src/ggml-cuda/template-instances/fattn-tile-instance-dkq256-dv256-q8_0-q4_0.cu
  create mode 100644 ggml/src/ggml-cuda/template-instances/fattn-tile-instance-dkq256-dv256-q8_0-q5_0.cu
  create mode 100644 ggml/src/ggml-cuda/template-instances/fattn-tile-instance-dkq256-dv256-q8_0-q5_1.cu
@@ -90,18 +92,21 @@ index 1c2626477..4c86ee4b4 100644
      const bool kv_ok     = kv_quant || kv_f16;
  
 diff --git a/ggml/src/ggml-cuda/fattn-tile.cu b/ggml/src/ggml-cuda/fattn-tile.cu
-index 54a08ded6..194782c58 100644
+index 54a08ded6..b04f8f7b3 100644
 --- a/ggml/src/ggml-cuda/fattn-tile.cu
 +++ b/ggml/src/ggml-cuda/fattn-tile.cu
-@@ -11,6 +11,27 @@ static void ggml_cuda_flash_attn_ext_tile_case_type(ggml_backend_cuda_context &
+@@ -11,6 +11,30 @@ static void ggml_cuda_flash_attn_ext_tile_case_type(ggml_backend_cuda_context &
      // scratch the launcher may stage into cannot disagree.
      const ggml_type tile_type = ggml_cuda_fattn_tile_type(K, V, ggml_cuda_info().devices[ggml_cuda_get_device()].cc);
  
 +#ifdef FAST_FP16_AVAILABLE
-+    // mixed K/V pairs: instantiated for head 256 only, the same predicate as the allocator's
++    // mixed K/V pairs (instantiated for head 256 only): the V type comes from ggml_cuda_fattn_tile_type_V, the same
++    // function the allocator sizes the F16 scratch with, so the instantiation and the scratch cannot disagree.
 +    if constexpr (DKQ == 256 && DV == 256) {
-+        if (ggml_cuda_fattn_tile_kv_mixed_ok(K, V)) {
-+            switch (V->type) {
++        const ggml_type tile_type_V = ggml_cuda_fattn_tile_type_V(K, V, ggml_cuda_info().devices[ggml_cuda_get_device()].cc);
++        if (tile_type_V != tile_type) {
++            GGML_ASSERT(tile_type == GGML_TYPE_Q8_0);
++            switch (tile_type_V) {
 +                case GGML_TYPE_Q4_0:
 +                    ggml_cuda_flash_attn_ext_tile_case<DKQ, DV, GGML_TYPE_Q8_0, GGML_TYPE_Q4_0>(ctx, dst);
 +                    return;
@@ -486,10 +491,10 @@ index 64dcacf05..7b4bf9077 100755
      for type_v in TYPES_KV:
          with open(f"fattn-vec-instance-{get_short_name(type_k)}-{get_short_name(type_v)}.cu", "w") as f:
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 0e2c63874..c3258f014 100644
+index 0e2c63874..4df3c7c3b 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -6420,9 +6420,22 @@ llama_context * llama_init_from_model(
+@@ -6420,9 +6420,28 @@ llama_context * llama_init_from_model(
      // split/flash-attention one - assumes type_k == type_v, so a mixed configuration is rejected
      // rather than accepted as a slow-but-valid one.  Both types default to f16, so only an explicit
      // --cache-type-k (or --cache-type-v) can trigger this.
@@ -500,6 +505,11 @@ index 0e2c63874..c3258f014 100644
 +    // The tile kernel's mixed instances exist for head 256 only, so any other head size keeps the rule.
 +    bool kv_mixed_native = params.type_k == GGML_TYPE_Q8_0 &&
 +        (params.type_v == GGML_TYPE_Q4_0 || params.type_v == GGML_TYPE_Q5_0 || params.type_v == GGML_TYPE_Q5_1);
++    // The sparse attention op (GGML_OP_FLASH_ATTN_QSA, built by qwen4exp) requires K->type == V->type
++    // (ggml/src/ggml-cuda/fattn-qsa.cu), so a model that uses it keeps the rule although its heads are 256 wide.
++    if (model->arch == LLM_ARCH_QWEN4EXP) {
++        kv_mixed_native = false;
++    }
 +    for (uint32_t il = 0; kv_mixed_native && il < model->hparams.n_layer_all; ++il) {
 +        if (model->hparams.has_kv(il) &&
 +                (model->hparams.n_embd_head_k(il) != 256 || model->hparams.n_embd_head_v(il) != 256)) {
@@ -510,7 +520,8 @@ index 0e2c63874..c3258f014 100644
          LLAMA_LOG_ERROR("%s: models require the same K and V cache types, got K=%s and V=%s; "
 -                "set --cache-type-v to match --cache-type-k (both default to f16)\n",
 +                "set --cache-type-v to match --cache-type-k (both default to f16); the one mixed form is "
-+                "K=q8_0 with V=q4_0, q5_0 or q5_1 on a model whose attention heads are all 256 wide\n",
++                "K=q8_0 with V=q4_0, q5_0 or q5_1 on a model whose attention heads are all 256 wide and that does not use "
++                "the sparse (QSA) attention\n",
                  __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));
          return nullptr;
      }

@@ -1,23 +1,22 @@
 # `mixed-kv` — a q8_0 K cache with a smaller V cache, read natively
 
-**Optional artifact, not part of the delivery.  Cut for `r280`** (against `release.json` tree
-`b83424ef5932ca6d23f8397b3dc51480c3c8c16f`).  **Built and measured on `r279`** (tree `d6372d47ae…`): `r280`
-differs from `r279` in `tests/test-llama-archs.cpp` only, which this patch does not touch and none of the
-checks below build or run.
+**Optional artifact, not part of the delivery.  Cut for `r281`** (`release.json` `.tip` `69296dde5`, tree
+`549f379e615684f900ca8059f15af69b64c5372b`).  Revision 2 (14 Nov 2026): the first cut was for `r280`; this one adds
+the two changes the review asked for (see "Revision 2" below) and the correctness gates.
 
 `--cache-type-k q8_0` with `--cache-type-v q5_1`, `q5_0` or `q4_0`, on models whose attention heads are all
-256 wide (the Qwen3.5 / 3.6 / 3.8 hybrids, dense and MoE).  The delivery refuses every mixed pair today.
+256 wide (the Qwen3.5 / 3.6 / 3.8 hybrids, dense and MoE) and that do not use the sparse (QSA) attention.  The
+delivery refuses every mixed pair today.
 
 * `mixed-kv.patch` — the artifact.  sha256
-  `ce136de5612f712eb2f83f0f6477ba79b59190dcc5bd170ac3364be56f85f113`
-* applies at `release.json` tree `b83424ef59…`, produces tree `86fcba68af9dfd0afdeb704913ac492d18e8891c`
-  (verified by strict `git am` on a checkout of `.tip` `f25fd3ff2`).  The same file applies at `r279`'s
-  `f61ac4bd8` and produces `ea6e3d7d5ac63e191521a018b0f8f37b3ad4c00a`, the tree everything below ran on
-* 11 files, 162 insertions / 42 deletions: `ggml/src/ggml-cuda/fattn-tile.cuh`, `fattn-rdna.cuh`,
+  `dca100d4096699b8a27bdd2255ce502487e1f13345c3b65122a357bfe73115c0`
+* applies at `r281` (`69296dde5`, tree `549f379e61…`) and produces tree `8a9f503ab21b557b43f8aad56320c866cddfceaf`
+  (verified with `git apply --cached` into a fresh index of `69296dde5`)
+* 11 files, 171 insertions / 42 deletions: `ggml/src/ggml-cuda/fattn-tile.cuh`, `fattn-rdna.cuh`,
   `fattn-tile.cu`, `fattn.cu`, `template-instances/generate_cu_files.py` and three generated tile instances,
   `src/llama-context.cpp`, `tests/test-backend-ops.cpp`, `tests/test-logits-width-probe.cpp`
-* the two existing artifacts (`host-pool-fill-src`, `two-lane-prefill`) did not apply at `f61ac4bd8` on their own
-  when this was cut (they fail in files this patch does not touch), so the combined apply is not verified
+* the measurements further down were taken with revision 1 on `r279` (`f61ac4bd8`); `r279` -> `r281` changes
+  `fattn-mma-f16.cuh` (#311, a constant-folded load bound, same results) and `tests/test-llama-archs.cpp` only
 
 ## Why the delivery refuses mixed pairs, and what this changes
 
@@ -40,6 +39,47 @@ predicate.  The context gate accepts the three pairs when every attention layer 
 
 `GGML_CUDA_FA_KV_MIXED=0` switches the native read of a mixed pair off (the staged path, as before).  It is a
 kill switch: unset means on.  A same-type cache does not reach any of the new code.
+
+## Revision 2: the QSA refusal, one V-type function, and the correctness gates (14 Nov 2026)
+
+**Two changes**, both from the review on PR #312:
+
+* `llama_init_from_model` keeps the same-type rule for `LLM_ARCH_QWEN4EXP`.  Its sparse attention op
+  (`GGML_OP_FLASH_ATTN_QSA`) asserts `K->type == V->type` (`fattn-qsa.cu`), and its heads are 256 wide, so the
+  head-256 gate alone would have admitted it.  Not demonstrated on a model: there is no Flash-Next file here.
+* The tile dispatch (`ggml_cuda_flash_attn_ext_tile_case_type`) now takes the V type from
+  `ggml_cuda_fattn_tile_type_V`, the function the allocator sizes the F16 scratch with, instead of switching on
+  `V->type` behind its own predicate.  The kernel chosen is the same; the instantiation and the allocator now
+  read one function, which is the contract the earlier drifts broke.
+
+**Gates.** RX 9070 (gfx1201) + RX 7900 GRE (gfx1100), the delivery's default settings (no tuning variables).
+"r281" is this patch on `69296dde5`; "r279" is the revision-1 engine (`f61ac4bd8` + revision 1), which runs the
+same kernel code for these models (the QSA refusal does not apply to them, the dispatch change picks the same
+instance).  Logs and scripts: `bench/mixedkv-gates-r281/` on the test box, available on request.
+
+| gate | tree | result |
+|---|---|---|
+| `test-backend-ops -o FLASH_ATTN_EXT`, default / `GGML_CUDA_FA_KV_NATIVE=0` / `GGML_CUDA_FA_KV_MIXED=0` | r279 | 7021/7021 in all six runs (two devices x three settings) |
+| `test-backend-ops -o FLASH_ATTN_EXT`, default | r281 | 7021/7021 on gfx1100 and on gfx1201 |
+| reserve, tensor split, `-c 32768` and `-c 131072` (KV, compute buffers, graph splits, the "converting K and V to f16" warning) | r279 | graph splits 2 / 2 and no warning for every pair; the same compute buffers for the mixed and the same-type pairs (`Meta()` 312.6 / 313.0 MiB, `CPU` 80.2 / 80.6 MiB); KV in the table below |
+| allocator and kernel per width (`[FATPATH]` from `fa-kernel-chooser-trace.patch`, plus the same print of `need_f16_K/V` in `ggml_cuda_flash_attn_ext_get_alloc_size`), W = 1..8 | r281 | gfx1201: best = 400 at every width, gfx1100: best = 200 at every width; `need_f16_K = need_f16_V = 0` for every pair and width, as for q8_0/q8_0 |
+| width purity, `logits-dump-kv.cpp` (looped over P and W in one process, one model load per cell; otherwise the tool's own steps), token-0 logits hash identical for W = 1..8 | r281 | PASS for q8_0/q8_0 and the three pairs on gfx1201 alone, `-sm layer` and `-sm tensor` at P = 256 / 700 / 1500; on gfx1100 alone at P = 256 / 700 / 1000 (that card cannot hold a 2048-token batch next to the 27B IQ4_XS, so its third length uses a 1024-token batch) |
+| `plain == draft-mtp` (greedy, 128 tokens, `--spec-draft-n-max` 1 / 3 / 7), two prompt lengths (~370 and ~2100 tokens) | r279 | identical text in all 18 cells (three pairs x tensor / layer / gfx1201 alone x two prompts) |
+| KLD against q8_0/q8_0 (WikiText-2 test, 8 x 4096, tensor split) | r279 | q5_1 0.0033 (same top p 98.30 %), q5_0 0.0039 (98.27 %), q4_0 0.0049 (97.83 %); q8_0/q8_0 against f16 is 0.0030 (table further down) |
+| `scripts/check-gpu-faults.sh` over every log and the kernel journal | both | clean |
+
+The q5_0 / q5_1 same-type pairs loaded and ran on the two-GPU `-sm tensor` split at both context sizes
+(reserve rows below), so the q4_1-family abort the review mentions did not occur here.
+
+KV at load, tensor split (`llama_kv_cache: size`):
+
+| `-c` | q8_0/q8_0 | q8_0/q5_1 | q5_1/q5_1 | q8_0/q5_0 | q5_0/q5_0 | q8_0/q4_0 | q4_0/q4_0 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 32768 | 1088 MiB | 928 | 768 | 896 | 704 | 832 | 576 |
+| 131072 | 4352 MiB | 3712 | 3072 | 3584 | 2816 | 3328 | 2304 |
+
+Not covered by these gates: three GPUs; a qwen4exp run; the adaptive-MTP acceptance gate; the speed matrix
+against both neighbouring same-type pairs with interleaved arms.
 
 ## Verification (r279, the delivery's default settings)
 
@@ -191,9 +231,10 @@ It loads and runs with a mixed pair; stock and patched agree; the decode spread 
   any other model, so nothing takes the staged path by accident.  Adding a size is the generator list, the
   extern declarations and the three `256` checks; the kernel body does not change.
 * K types other than `q8_0`, and V types other than `q4_0` / `q5_0` / `q5_1`.
-* gfx1151 and CDNA.  Three GPUs.  `-sm layer`.
+* gfx1151 and CDNA.  Three GPUs.  Speed on `-sm layer` (its correctness is in the revision-2 gates).
 * A K-quant model on one card (the two 27B files that fit one 16 GB card here are IQ quants).
-* Quality at depth (the KLD run is 4096-token chunks) and MTP acceptance per pair.
+* Quality at depth (the KLD run is 4096-token chunks) and MTP acceptance per pair (the text equality with
+  draft-mtp is in the revision-2 gates).
 * The vec kernel.  `GGML_CUDA_FA_QUANTS` lists same-type pairs only, and the HIP chooser does not reach it for
   a quantized cache, so nothing here depends on it.
 
